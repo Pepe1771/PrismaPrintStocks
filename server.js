@@ -8,12 +8,11 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 // ==================== CONFIGURACIÓN ====================
-// Middleware
 app.use(cors());
 app.use(bodyParser.json());
 app.use(express.static('public'));
 
-// Configuração da conexão MySQL
+// Configuración de conexión MySQL (Render / Clever Cloud)
 const dbConfig = {
   host: process.env.DB_HOST || 'localhost',
   user: process.env.DB_USER || 'Pepe17',
@@ -27,219 +26,157 @@ const dbConfig = {
 
 let pool;
 
-// Inicializar pool de conexões
 async function initDatabase() {
   try {
     pool = mysql.createPool(dbConfig);
     console.log('✅ Conexão com MySQL estabelecida com sucesso');
-    
     const connection = await pool.getConnection();
     await connection.ping();
     connection.release();
-    console.log('✅ Pool de conexões MySQL ativo');
   } catch (error) {
     console.error('❌ Erro ao conectar ao MySQL:', error.message);
-    process.exit(1);
   }
 }
 
-// ==================== ROTAS DE AUTENTICAÇÃO ====================
-
+// ==================== AUTENTICACIÓN ====================
 app.post('/api/login', async (req, res) => {
   try {
     const { username, password } = req.body;
-    
-    // Verifica utilizador e senha (nota: em produção idealmente usaria bcrypt para senhas)
     const [rows] = await pool.execute(
       'SELECT id, username, name, role FROM utilizadores WHERE username = ? AND password = ?',
       [username, password]
     );
-    
     if (rows.length > 0) {
-      res.json({ 
-        success: true, 
-        user: { 
-          id: rows[0].id, 
-          username: rows[0].username,
-          name: rows[0].name,
-          role: rows[0].role
-        } 
-      });
+      res.json({ success: true, user: rows[0] });
     } else {
       res.status(401).json({ success: false, message: 'Credenciais inválidas' });
     }
   } catch (error) {
-    console.error('Erro no login:', error);
-    res.status(500).json({ success: false, message: 'Erro no servidor' });
+    console.error(error);
+    res.status(500).json({ success: false });
   }
 });
 
-// ==================== FUNÇÃO AUXILIAR DE MAPEAMENTO ====================
+// ==================== RUTAS ESPECÍFICAS (PARA EVITAR ERROS) ====================
 
-// Mapeia o nome da entidade para o nome da tabela e chaves
-const entityMap = {
-  filament: { table: 'filamentos', pk: 'id', type: 'filament' },
-  purchase: { table: 'entradas', pk: 'id', type: 'purchase' },
-  print: { table: 'impressoes', pk: 'id', type: 'print' },
-  product: { table: 'produtos', pk: 'id', type: 'product' },
-  supplier: { table: 'fornecedores', pk: 'id', type: 'supplier' }
-};
+// 1. REGISTRAR FORNECEDOR (PROVEEDOR)
+app.post('/api/registos/supplier', async (req, res) => {
+  try {
+    // Recibimos los datos y buscamos "supplierName" O "name" por si acaso
+    const { id, registo_id, supplierName, name, supplierEmail, email, supplierPhone, phone, supplierAddress, address, timestamp } = req.body;
+    
+    // Normalización: Aseguramos que tenemos los datos correctos
+    const finalID = id || registo_id; // El ID que genera el frontend
+    const finalName = supplierName || name; 
+    const finalEmail = supplierEmail || email;
+    const finalPhone = supplierPhone || phone;
+    const finalAddress = supplierAddress || address;
 
-// ==================== ROTAS DE DADOS (CRUD) ====================
+    const sql = `INSERT INTO fornecedores (registo_id, supplierName, supplierEmail, supplierPhone, supplierAddress, timestamp) VALUES (?, ?, ?, ?, ?, ?)`;
+    
+    const [result] = await pool.execute(sql, [finalID, finalName, finalEmail, finalPhone, finalAddress, timestamp]);
+    res.json({ success: true, backendId: result.insertId });
+  } catch (error) {
+    console.error('Error supplier:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
 
-// 1. Rota para LISTAR TODOS os registos (CORRIGIDA)
-// Esta é a parte importante que traduz os dados do MySQL para o App.js
+// 2. REGISTRAR FILAMENTO
+app.post('/api/registos/filament', async (req, res) => {
+  try {
+    const data = req.body;
+    // Mapeo manual para asegurar coincidencia con la Base de Datos
+    const sql = `INSERT INTO filamentos 
+      (registo_id, barcode, name, material, color, weightPerUnit, pricePerUnit, minStock, supplier, timestamp) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+    // Convertimos a números lo que debe ser número para evitar errores
+    const weight = parseFloat(data.weightPerUnit || data.weight_per_unit || 0);
+    const price = parseFloat(data.pricePerUnit || data.price_per_unit || 0);
+    const stock = parseFloat(data.minStock || data.min_stock || 0);
+
+    await pool.execute(sql, [
+      data.id || data.registo_id,
+      data.barcode,
+      data.name,
+      data.material,
+      data.color,
+      weight,
+      price,
+      stock,
+      data.supplier,
+      data.timestamp
+    ]);
+    res.json({ success: true, message: 'Filamento criado' });
+  } catch (error) {
+    console.error('Error filament:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// 3. REGISTRAR PRODUCTO (Venta)
+app.post('/api/registos/product', async (req, res) => {
+  try {
+    const data = req.body;
+    const sql = `INSERT INTO produtos (registo_id, barcode, name, productCategory, stock, cost, salePrice, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
+    await pool.execute(sql, [
+      data.id, data.barcode, data.name, data.productCategory, data.stock, data.cost, data.salePrice, data.timestamp
+    ]);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error producto:', error);
+    res.status(500).json({ success: false });
+  }
+});
+
+// ==================== LISTAR TODO (GET) ====================
+// Esta ruta lee todas las tablas y las junta para el Dashboard
 app.get('/api/registos', async (req, res) => {
   try {
     let allRecords = [];
-    
-    for (const type in entityMap) {
-      const map = entityMap[type];
-      
-      // Busca dados brutos do MySQL
-      const [rows] = await pool.execute(`SELECT * FROM ${map.table}`);
-      
-      // Traduz e normaliza cada linha
-      const records = rows.map(row => {
-        // Objeto base
-        const record = {
-          __backendId: row.id,
-          id: row.registo_id || row.id.toString(), // ID lógico para o frontend
-          type: map.type,
-          timestamp: row.timestamp instanceof Date ? row.timestamp.toISOString() : (row.timestamp || new Date().toISOString())
-        };
 
-        // Mapeamento específico por tipo (Snake_case -> CamelCase e Texto -> Número)
-        if (type === 'filament') {
-            record.barcode = row.barcode;
-            record.name = row.name;
-            record.material = row.material;
-            record.color = row.color;
-            // Verifica se vem como nome_snake ou nomeCamel e converte para numero
-            record.weightPerUnit = parseFloat(row.weight_per_unit || row.weightPerUnit || 0);
-            record.pricePerUnit = parseFloat(row.price_per_unit || row.pricePerUnit || 0);
-            record.minStock = parseFloat(row.min_stock || row.minStock || 0);
-            record.supplier = row.supplier;
-        } 
-        else if (type === 'purchase') {
-            record.filamentBarcode = row.filament_barcode || row.filamentBarcode;
-            record.quantityPurchased = parseFloat(row.quantity_purchased || row.quantityPurchased || 0);
-            record.purchaseDate = row.purchase_date || row.purchaseDate;
-            record.supplier = row.supplier;
-        }
-        else if (type === 'print') {
-            record.printName = row.print_name || row.printName;
-            record.filamentsUsed = row.filaments_used || row.filamentsUsed;
-            record.notes = row.notes;
-        }
-        else if (type === 'product') {
-            record.barcode = row.barcode;
-            record.name = row.name;
-            record.productCategory = row.product_category || row.productCategory;
-            record.stock = parseInt(row.stock || 0);
-            record.cost = parseFloat(row.cost || 0);
-            record.salePrice = parseFloat(row.sale_price || row.salePrice || 0);
-        }
-        else if (type === 'supplier') {
-            record.supplierName = row.supplier_name || row.supplierName;
-            record.supplierEmail = row.supplier_email || row.supplierEmail;
-            record.supplierPhone = row.supplier_phone || row.supplierPhone;
-            record.supplierAddress = row.supplier_address || row.supplierAddress;
-        }
+    // 1. Obtener Filamentos
+    const [filaments] = await pool.execute('SELECT * FROM filamentos');
+    allRecords = allRecords.concat(filaments.map(f => ({
+      ...f, 
+      id: f.registo_id, // Devolvemos el ID original al frontend
+      type: 'filament',
+      weightPerUnit: parseFloat(f.weightPerUnit), // Asegurar números
+      pricePerUnit: parseFloat(f.pricePerUnit),
+      minStock: parseFloat(f.minStock)
+    })));
 
-        return record;
-      });
-      
-      allRecords = allRecords.concat(records);
-    }
-    
+    // 2. Obtener Proveedores
+    const [suppliers] = await pool.execute('SELECT * FROM fornecedores');
+    allRecords = allRecords.concat(suppliers.map(s => ({
+      ...s,
+      id: s.registo_id,
+      type: 'supplier',
+      supplierName: s.supplierName, // Asegurar nombre
+      name: s.supplierName // Por compatibilidad
+    })));
+
+    // 3. Obtener Productos
+    const [products] = await pool.execute('SELECT * FROM produtos');
+    allRecords = allRecords.concat(products.map(p => ({
+      ...p,
+      id: p.registo_id,
+      type: 'product'
+    })));
+
     res.json({ success: true, data: allRecords });
   } catch (error) {
-    console.error('Erro ao listar todos os registos:', error);
-    res.status(500).json({ success: false, message: 'Erro ao listar todos os registos' });
+    console.error('Error GET:', error);
+    res.status(500).json({ success: false });
   }
 });
 
-// 2. Rota para CRIAR registos
-app.post('/api/registos/:type', async (req, res) => {
-  const { type } = req.params;
-  const map = entityMap[type];
-  if (!map) return res.status(400).json({ success: false, message: 'Tipo inválido' });
-
-  try {
-    const record = req.body;
-    // Remove campos de controle do frontend
-    let fields = Object.keys(record).filter(key => key !== '__backendId' && key !== 'type');
-    
-    // Adiciona registo_id (ID gerado pelo frontend)
-    fields.push('registo_id');
-    const values = fields.map(key => key === 'registo_id' ? record.id : record[key]);
-    
-    const placeholders = fields.map(() => '?').join(', ');
-    const fieldNames = fields.join(', ');
-
-    // Nota: Se a BD usar snake_case, certifique-se que o frontend envia snake_case 
-    // ou adicione um tradutor aqui também se falhar a inserção.
-    const query = `INSERT INTO ${map.table} (${fieldNames}) VALUES (${placeholders})`;
-    const [result] = await pool.execute(query, values);
-    
-    res.json({ success: true, backendId: result.insertId, message: 'Criado com sucesso' });
-  } catch (error) {
-    console.error(`Erro ao criar (${type}):`, error);
-    res.status(500).json({ success: false, message: 'Erro ao criar registo' });
-  }
-});
-
-// 3. Rota para ATUALIZAR registos
-app.put('/api/registos/:type/:backendId', async (req, res) => {
-  const { type, backendId } = req.params;
-  const map = entityMap[type];
-  if (!map) return res.status(400).json({ success: false, message: 'Tipo inválido' });
-
-  try {
-    const record = req.body;
-    const fields = Object.keys(record).filter(key => key !== '__backendId' && key !== 'type' && key !== 'id');
-    
-    const setClauses = fields.map(key => `${key} = ?`).join(', ');
-    const values = fields.map(key => record[key]);
-    values.push(backendId);
-
-    const query = `UPDATE ${map.table} SET ${setClauses} WHERE ${map.pk} = ?`;
-    const [result] = await pool.execute(query, values);
-    
-    if (result.affectedRows > 0) res.json({ success: true, message: 'Atualizado com sucesso' });
-    else res.status(404).json({ success: false, message: 'Registo não encontrado' });
-  } catch (error) {
-    console.error(`Erro ao atualizar (${type}):`, error);
-    res.status(500).json({ success: false, message: 'Erro ao atualizar' });
-  }
-});
-
-// 4. Rota para ELIMINAR registos
-app.delete('/api/registos/:type/:backendId', async (req, res) => {
-  const { type, backendId } = req.params;
-  const map = entityMap[type];
-  if (!map) return res.status(400).json({ success: false, message: 'Tipo inválido' });
-
-  try {
-    const query = `DELETE FROM ${map.table} WHERE ${map.pk} = ?`;
-    const [result] = await pool.execute(query, [backendId]);
-    
-    if (result.affectedRows > 0) res.json({ success: true, message: 'Eliminado com sucesso' });
-    else res.status(404).json({ success: false, message: 'Registo não encontrado' });
-  } catch (error) {
-    console.error(`Erro ao eliminar (${type}):`, error);
-    res.status(500).json({ success: false, message: 'Erro ao eliminar' });
-  }
-});
-
-// ==================== INICIALIZAÇÃO ====================
-
+// ==================== INICIAR SERVIDOR ====================
 async function startServer() {
   await initDatabase();
   app.listen(PORT, () => {
-    console.log(`🚀 Servidor a correr em http://localhost:${PORT}`);
-    console.log(`📊 API disponível em http://localhost:${PORT}/api`);
+    console.log(`🚀 Servidor activo en puerto ${PORT}`);
   });
 }
 

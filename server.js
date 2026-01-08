@@ -12,7 +12,7 @@ app.use(cors());
 app.use(bodyParser.json());
 app.use(express.static('public'));
 
-// Configuración de conexión MySQL (Render / Clever Cloud)
+// Configuración de conexión MySQL (Render / Clever Cloud / Local)
 const dbConfig = {
   host: process.env.DB_HOST || 'localhost',
   user: process.env.DB_USER || 'Pepe17',
@@ -57,23 +57,22 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// ==================== RUTAS ESPECÍFICAS (PARA EVITAR ERROS) ====================
+// ==================== RUTAS MANUALES (CRUD) ====================
+// Usamos rutas específicas para evitar errores de nombres de columnas
 
 // 1. REGISTRAR FORNECEDOR (PROVEEDOR)
 app.post('/api/registos/supplier', async (req, res) => {
   try {
-    // Recibimos los datos y buscamos "supplierName" O "name" por si acaso
     const { id, registo_id, supplierName, name, supplierEmail, email, supplierPhone, phone, supplierAddress, address, timestamp } = req.body;
     
-    // Normalización: Aseguramos que tenemos los datos correctos
-    const finalID = id || registo_id; // El ID que genera el frontend
+    // Normalización de datos
+    const finalID = id || registo_id; 
     const finalName = supplierName || name; 
     const finalEmail = supplierEmail || email;
     const finalPhone = supplierPhone || phone;
     const finalAddress = supplierAddress || address;
 
     const sql = `INSERT INTO fornecedores (registo_id, supplierName, supplierEmail, supplierPhone, supplierAddress, timestamp) VALUES (?, ?, ?, ?, ?, ?)`;
-    
     const [result] = await pool.execute(sql, [finalID, finalName, finalEmail, finalPhone, finalAddress, timestamp]);
     res.json({ success: true, backendId: result.insertId });
   } catch (error) {
@@ -86,27 +85,16 @@ app.post('/api/registos/supplier', async (req, res) => {
 app.post('/api/registos/filament', async (req, res) => {
   try {
     const data = req.body;
-    // Mapeo manual para asegurar coincidencia con la Base de Datos
     const sql = `INSERT INTO filamentos 
       (registo_id, barcode, name, material, color, weightPerUnit, pricePerUnit, minStock, supplier, timestamp) 
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
-    // Convertimos a números lo que debe ser número para evitar errores
     const weight = parseFloat(data.weightPerUnit || data.weight_per_unit || 0);
     const price = parseFloat(data.pricePerUnit || data.price_per_unit || 0);
     const stock = parseFloat(data.minStock || data.min_stock || 0);
 
     await pool.execute(sql, [
-      data.id || data.registo_id,
-      data.barcode,
-      data.name,
-      data.material,
-      data.color,
-      weight,
-      price,
-      stock,
-      data.supplier,
-      data.timestamp
+      data.id || data.registo_id, data.barcode, data.name, data.material, data.color, weight, price, stock, data.supplier, data.timestamp
     ]);
     res.json({ success: true, message: 'Filamento criado' });
   } catch (error) {
@@ -121,7 +109,7 @@ app.post('/api/registos/product', async (req, res) => {
     const data = req.body;
     const sql = `INSERT INTO produtos (registo_id, barcode, name, productCategory, stock, cost, salePrice, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
     await pool.execute(sql, [
-      data.id, data.barcode, data.name, data.productCategory, data.stock, data.cost, data.salePrice, data.timestamp
+      data.id || data.registo_id, data.barcode, data.name, data.productCategory, data.stock, data.cost, data.salePrice, data.timestamp
     ]);
     res.json({ success: true });
   } catch (error) {
@@ -130,34 +118,70 @@ app.post('/api/registos/product', async (req, res) => {
   }
 });
 
-// ==================== LISTAR TODO (GET) ====================
-// Esta ruta lee todas las tablas y las junta para el Dashboard
+// 4. REGISTRAR ENTRADA (COMPRA) - ¡AQUÍ ESTABA EL ERROR 404!
+app.post('/api/registos/purchase', async (req, res) => {
+  try {
+    const data = req.body;
+    const sql = `INSERT INTO entradas (registo_id, filamentBarcode, quantityPurchased, purchaseDate, supplier, timestamp) VALUES (?, ?, ?, ?, ?, ?)`;
+    
+    const qty = parseFloat(data.quantityPurchased || 0);
+
+    await pool.execute(sql, [
+      data.id || data.registo_id, data.filamentBarcode, qty, data.purchaseDate, data.supplier, data.timestamp
+    ]);
+    res.json({ success: true, message: 'Entrada registrada' });
+  } catch (error) {
+    console.error('Error purchase:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// 5. REGISTRAR IMPRESSÃO (PRINT)
+app.post('/api/registos/print', async (req, res) => {
+  try {
+    const data = req.body;
+    // Convertimos el array de filamentos a JSON string para guardar en TEXT
+    const filamentsString = JSON.stringify(data.filamentsUsed || []);
+
+    const sql = `INSERT INTO impressoes (registo_id, printName, filamentsUsed, notes, timestamp) VALUES (?, ?, ?, ?, ?)`;
+
+    await pool.execute(sql, [
+      data.id || data.registo_id, data.printName, filamentsString, data.notes, data.timestamp
+    ]);
+    res.json({ success: true, message: 'Impressão registrada' });
+  } catch (error) {
+    console.error('Error print:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// ==================== LISTAR TODO (GET) PARA EL DASHBOARD ====================
 app.get('/api/registos', async (req, res) => {
   try {
     let allRecords = [];
 
-    // 1. Obtener Filamentos
+    // 1. Filamentos
     const [filaments] = await pool.execute('SELECT * FROM filamentos');
     allRecords = allRecords.concat(filaments.map(f => ({
       ...f, 
-      id: f.registo_id, // Devolvemos el ID original al frontend
+      id: f.registo_id, 
       type: 'filament',
-      weightPerUnit: parseFloat(f.weightPerUnit), // Asegurar números
+      weightPerUnit: parseFloat(f.weightPerUnit), 
       pricePerUnit: parseFloat(f.pricePerUnit),
       minStock: parseFloat(f.minStock)
     })));
 
-    // 2. Obtener Proveedores
+    // 2. Proveedores
     const [suppliers] = await pool.execute('SELECT * FROM fornecedores');
     allRecords = allRecords.concat(suppliers.map(s => ({
       ...s,
       id: s.registo_id,
       type: 'supplier',
-      supplierName: s.supplierName, // Asegurar nombre
-      name: s.supplierName // Por compatibilidad
+      supplierName: s.supplierName, 
+      name: s.supplierName 
     })));
 
-    // 3. Obtener Productos
+    // 3. Productos
     const [products] = await pool.execute('SELECT * FROM produtos');
     allRecords = allRecords.concat(products.map(p => ({
       ...p,
@@ -165,9 +189,27 @@ app.get('/api/registos', async (req, res) => {
       type: 'product'
     })));
 
+    // 4. Entradas
+    const [purchases] = await pool.execute('SELECT * FROM entradas');
+    allRecords = allRecords.concat(purchases.map(p => ({
+      ...p,
+      id: p.registo_id,
+      type: 'purchase',
+      quantityPurchased: parseFloat(p.quantityPurchased)
+    })));
+
+    // 5. Impresiones
+    const [prints] = await pool.execute('SELECT * FROM impressoes');
+    allRecords = allRecords.concat(prints.map(p => ({
+      ...p,
+      id: p.registo_id,
+      type: 'print',
+      filamentsUsed: JSON.parse(p.filamentsUsed || '[]') // Convertimos de vuelta a Array
+    })));
+
     res.json({ success: true, data: allRecords });
   } catch (error) {
-    console.error('Error GET:', error);
+    console.error('Error GET All:', error);
     res.status(500).json({ success: false });
   }
 });

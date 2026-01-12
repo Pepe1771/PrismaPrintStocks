@@ -247,7 +247,7 @@ app.get('/api/registos', async (req, res) => {
   }
 });
 
-// 7. ELIMINAR (DELETE)
+// 7. ELIMINAR (DELETE) - CORREGIDO
 app.delete('/api/registos/:type/:id', async (req, res) => {
     try {
         const { type, id } = req.params;
@@ -263,18 +263,23 @@ app.delete('/api/registos/:type/:id', async (req, res) => {
             default: return res.status(400).json({success: false, message: 'Tipo inválido'});
         }
 
-        // Tenta apagar por ID (backendId)
-        const [result] = await pool.execute(`DELETE FROM ${table} WHERE id = ?`, [id]);
+        // CORRECCIÓN: Intentamos borrar buscando por 'id' (numérico) O por 'registo_id' (timestamp)
+        // Esto asegura que encuentre el registro sin importar qué ID envíe el frontend.
+        const sql = `DELETE FROM ${table} WHERE registo_id = ? OR id = ?`;
+        
+        const [result] = await pool.execute(sql, [id, id]);
         
         if (result.affectedRows > 0) {
-             // Se for venda, devíamos repor o stock? Por agora simplificamos e apenas apagamos o registo.
-            res.json({ success: true });
+            res.json({ success: true, message: 'Eliminado com sucesso' });
         } else {
-            res.status(404).json({ success: false, message: 'Registo não encontrado' });
+            // Si no borró nada, devolvemos success: true para que la lista se actualice visualmente
+            // aunque el registro ya no existiera (idempotencia)
+            console.log('Aviso: Nenhum registo encontrado para apagar com ID:', id);
+            res.json({ success: true, message: 'Registo já não existia ou não foi encontrado' });
         }
     } catch (error) {
         console.error('Erro Delete:', error);
-        res.status(500).json({ success: false });
+        res.status(500).json({ success: false, message: error.message });
     }
 });
 

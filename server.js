@@ -282,6 +282,32 @@ app.delete('/api/registos/:type/:id', async (req, res) => {
         res.status(500).json({ success: false, message: error.message });
     }
 });
+// 8. ATUALIZAR (EDIT - PUT) - FILAMENTOS
+app.put('/api/registos/filament/:id', async (req, res) => {
+  try {
+    const { id } = req.params; // ID numérico ou registo_id
+    const data = req.body;
+
+    const sql = `UPDATE filamentos SET 
+      name = ?, material = ?, color = ?, weightPerUnit = ?, pricePerUnit = ?, minStock = ?, supplier = ?
+      WHERE registo_id = ? OR id = ?`;
+
+    const weight = parseFloat(data.weightPerUnit || 0);
+    const price = parseFloat(data.pricePerUnit || 0);
+    const stock = parseFloat(data.minStock || 0);
+
+    // Nota: O barcode geralmente não se edita para não quebrar o histórico
+    await pool.execute(sql, [
+      data.name, data.material, data.color, weight, price, stock, data.supplier,
+      id, id
+    ]);
+
+    res.json({ success: true, message: 'Filamento atualizado com sucesso' });
+  } catch (error) {
+    console.error('Erro Update Filament:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
 
 // ==================== INICIAR SERVIDOR ====================
 async function startServer() {

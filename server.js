@@ -308,7 +308,39 @@ app.put('/api/registos/filament/:id', async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 });
+// 9. ATUALIZAR (EDIT - PUT) - PRODUTOS
+app.put('/api/registos/product/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const data = req.body;
+    const sql = `UPDATE produtos SET name = ?, productCategory = ?, stock = ?, cost = ?, salePrice = ? WHERE registo_id = ? OR id = ?`;
+    
+    await pool.execute(sql, [
+      data.name, data.productCategory, parseInt(data.stock), parseFloat(data.cost), parseFloat(data.salePrice),
+      id, id
+    ]);
+    res.json({ success: true, message: 'Produto atualizado' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
 
+// 10. ATUALIZAR (EDIT - PUT) - FORNECEDORES
+app.put('/api/registos/supplier/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const data = req.body;
+    const sql = `UPDATE fornecedores SET supplierName = ?, supplierEmail = ?, supplierPhone = ?, supplierAddress = ? WHERE registo_id = ? OR id = ?`;
+    
+    await pool.execute(sql, [
+      data.supplierName, data.supplierEmail, data.supplierPhone, data.supplierAddress,
+      id, id
+    ]);
+    res.json({ success: true, message: 'Fornecedor atualizado' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
 // ==================== INICIAR SERVIDOR ====================
 async function startServer() {
   await initDatabase();

@@ -246,7 +246,7 @@ app.put('/api/registos/supplier/:id', async (req, res) => {
   }
 });
 
-// 11. ENTRADAS (Edit) - NUEVO
+// 11. ENTRADAS (Edit)
 app.put('/api/registos/purchase/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -267,4 +267,22 @@ async function startServer() {
   await initDatabase();
   app.listen(PORT, () => console.log(`🚀 Porta ${PORT}`));
 }
+// 12. IMPRESSÕES (Edit)
+app.put('/api/registos/print/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const data = req.body;
+    // Convertemos o array de objetos de volta para string JSON para guardar na BD
+    const filamentsString = JSON.stringify(data.filamentsUsed || []);
+
+    const sql = `UPDATE impressoes SET printName = ?, filamentsUsed = ?, notes = ? WHERE registo_id = ? OR id = ?`;
+
+    await pool.execute(sql, [
+      data.printName, filamentsString, data.notes, id, id
+    ]);
+    res.json({ success: true, message: 'Impressão atualizada' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
 startServer();

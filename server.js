@@ -285,4 +285,51 @@ app.put('/api/registos/print/:id', async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 });
+/ 13. VENDAS (Edit) - CON AJUSTE DE STOCK
+app.put('/api/registos/sale/:id', async (req, res) => {
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction(); // Iniciar transacción para seguridad
+
+    const { id } = req.params;
+    const data = req.body; // data trae: productBarcode, quantitySold, totalPrice, saleDate...
+
+    // 1. Obtener la venta ORIGINAL para saber qué deshacer
+    const [oldSaleRows] = await connection.execute('SELECT * FROM vendas WHERE registo_id = ? OR id = ?', [id, id]);
+    
+    if (oldSaleRows.length === 0) {
+        throw new Error('Venda não encontrada');
+    }
+    const oldSale = oldSaleRows[0];
+
+    // 2. REVERTIR STOCK (Devolver la cantidad original al stock)
+    // Usamos oldSale.productBarcode y oldSale.quantitySold
+    await connection.execute(
+        'UPDATE produtos SET stock = stock + ? WHERE barcode = ?',
+        [oldSale.quantitySold, oldSale.productBarcode]
+    );
+
+    // 3. ACTUALIZAR LA VENTA CON DATOS NUEVOS
+    const sqlUpdateVenda = `UPDATE vendas SET productBarcode = ?, quantitySold = ?, totalPrice = ?, saleDate = ? WHERE registo_id = ? OR id = ?`;
+    await connection.execute(sqlUpdateVenda, [
+        data.productBarcode, data.quantitySold, data.totalPrice, data.saleDate, id, id
+    ]);
+
+    // 4. APLICAR NUEVO STOCK (Restar la nueva cantidad)
+    await connection.execute(
+        'UPDATE produtos SET stock = stock - ? WHERE barcode = ?',
+        [data.quantitySold, data.productBarcode]
+    );
+
+    await connection.commit(); // Confirmar cambios
+    res.json({ success: true, message: 'Venda e stock atualizados' });
+
+  } catch (error) {
+    await connection.rollback(); // Si falla, deshacer todo
+    console.error('Erro update sale:', error);
+    res.status(500).json({ success: false, message: error.message });
+  } finally {
+    connection.release();
+  }
+});
 startServer();

@@ -104,16 +104,34 @@ app.post('/api/registos/product', async (req, res) => {
   }
 });
 
-// 4. ENTRADAS (CREATE)
+// 4. ENTRADAS (CREATE) - Compatible con Filamentos y Productos
 app.post('/api/registos/purchase', async (req, res) => {
   try {
     const data = req.body;
-    const sql = `INSERT INTO entradas (registo_id, filamentBarcode, quantityPurchased, purchaseDate, supplier, timestamp) VALUES (?, ?, ?, ?, ?, ?)`;
-    await pool.execute(sql, [
-      data.id || data.registo_id, data.filamentBarcode, parseFloat(data.quantityPurchased), data.purchaseDate, data.supplier, data.timestamp
+    // category puede ser 'filament' o 'product'
+    const category = data.category || 'filament'; 
+
+    // 1. Guardar en el historial
+    const sqlInsert = `INSERT INTO entradas (registo_id, filamentBarcode, quantityPurchased, purchaseDate, supplier, timestamp) VALUES (?, ?, ?, ?, ?, ?)`;
+    
+    await pool.execute(sqlInsert, [
+      data.id || data.registo_id, 
+      data.barcode || data.filamentBarcode, // Acepta ambos nombres
+      parseFloat(data.quantityPurchased), 
+      data.purchaseDate, 
+      data.supplier, 
+      data.timestamp
     ]);
-    res.json({ success: true });
+
+    // 2. SI ES UN PRODUTO -> AUMENTAR STOCK
+    if (category === 'product') {
+        const sqlUpdateStock = `UPDATE produtos SET stock = stock + ? WHERE barcode = ?`;
+        await pool.execute(sqlUpdateStock, [parseFloat(data.quantityPurchased), data.barcode || data.filamentBarcode]);
+    }
+
+    res.json({ success: true, message: 'Entrada registada' });
   } catch (error) {
+    console.error('Erro purchase:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 });
@@ -262,17 +280,11 @@ app.put('/api/registos/purchase/:id', async (req, res) => {
   }
 });
 
-
-async function startServer() {
-  await initDatabase();
-  app.listen(PORT, () => console.log(`🚀 Porta ${PORT}`));
-}
 // 12. IMPRESSÕES (Edit)
 app.put('/api/registos/print/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const data = req.body;
-    // Convertemos o array de objetos de volta para string JSON para guardar na BD
     const filamentsString = JSON.stringify(data.filamentsUsed || []);
 
     const sql = `UPDATE impressoes SET printName = ?, filamentsUsed = ?, notes = ? WHERE registo_id = ? OR id = ?`;
@@ -285,16 +297,17 @@ app.put('/api/registos/print/:id', async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 });
-/ 13. VENDAS (Edit) - CON AJUSTE DE STOCK
+
+// 13. VENDAS (Edit) - CON AJUSTE DE STOCK
 app.put('/api/registos/sale/:id', async (req, res) => {
   const connection = await pool.getConnection();
   try {
-    await connection.beginTransaction(); // Iniciar transacción para seguridad
+    await connection.beginTransaction();
 
     const { id } = req.params;
-    const data = req.body; // data trae: productBarcode, quantitySold, totalPrice, saleDate...
+    const data = req.body;
 
-    // 1. Obtener la venta ORIGINAL para saber qué deshacer
+    // 1. Obtener venta ORIGINAL
     const [oldSaleRows] = await connection.execute('SELECT * FROM vendas WHERE registo_id = ? OR id = ?', [id, id]);
     
     if (oldSaleRows.length === 0) {
@@ -302,34 +315,38 @@ app.put('/api/registos/sale/:id', async (req, res) => {
     }
     const oldSale = oldSaleRows[0];
 
-    // 2. REVERTIR STOCK (Devolver la cantidad original al stock)
-    // Usamos oldSale.productBarcode y oldSale.quantitySold
+    // 2. REVERTIR STOCK (Devolver stock original)
     await connection.execute(
         'UPDATE produtos SET stock = stock + ? WHERE barcode = ?',
         [oldSale.quantitySold, oldSale.productBarcode]
     );
 
-    // 3. ACTUALIZAR LA VENTA CON DATOS NUEVOS
+    // 3. ACTUALIZAR VENTA
     const sqlUpdateVenda = `UPDATE vendas SET productBarcode = ?, quantitySold = ?, totalPrice = ?, saleDate = ? WHERE registo_id = ? OR id = ?`;
     await connection.execute(sqlUpdateVenda, [
         data.productBarcode, data.quantitySold, data.totalPrice, data.saleDate, id, id
     ]);
 
-    // 4. APLICAR NUEVO STOCK (Restar la nueva cantidad)
+    // 4. APLICAR NUEVO STOCK
     await connection.execute(
         'UPDATE produtos SET stock = stock - ? WHERE barcode = ?',
         [data.quantitySold, data.productBarcode]
     );
 
-    await connection.commit(); // Confirmar cambios
+    await connection.commit();
     res.json({ success: true, message: 'Venda e stock atualizados' });
 
   } catch (error) {
-    await connection.rollback(); // Si falla, deshacer todo
+    await connection.rollback();
     console.error('Erro update sale:', error);
     res.status(500).json({ success: false, message: error.message });
   } finally {
     connection.release();
   }
 });
+
+async function startServer() {
+  await initDatabase();
+  app.listen(PORT, () => console.log(`🚀 Porta ${PORT}`));
+}
 startServer();

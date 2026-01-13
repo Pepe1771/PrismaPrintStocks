@@ -7,12 +7,10 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// ==================== CONFIGURAÇÃO ====================
 app.use(cors());
 app.use(bodyParser.json());
 app.use(express.static('public'));
 
-// Configuração de conexão MySQL
 const dbConfig = {
   host: process.env.DB_HOST || 'localhost',
   user: process.env.DB_USER || 'root',
@@ -29,12 +27,31 @@ let pool;
 async function initDatabase() {
   try {
     pool = mysql.createPool(dbConfig);
-    console.log('✅ Conexão com MySQL estabelecida com sucesso');
+    console.log('✅ MySQL Conectado');
+    
+    // TABLA PEDIDOS
     const connection = await pool.getConnection();
-    await connection.ping();
+    await connection.execute(`
+      CREATE TABLE IF NOT EXISTS pedidos (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        registo_id VARCHAR(50),
+        clientName VARCHAR(100),
+        productBarcode VARCHAR(100),
+        quantity INT,
+        dueDate DATE,
+        status VARCHAR(20) DEFAULT 'pendente',
+        timestamp VARCHAR(50)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
+    
+    // TABLA PRODUCTOS - COLUMNA COMPOSICION (RECETA)
+    try {
+        await connection.execute("ALTER TABLE produtos ADD COLUMN composition LONGTEXT");
+    } catch (e) { /* Ignorar si ya existe */ }
+
     connection.release();
   } catch (error) {
-    console.error('❌ Erro ao conectar ao MySQL:', error.message);
+    console.error('❌ Error DB:', error.message);
   }
 }
 
@@ -58,7 +75,7 @@ app.post('/api/login', async (req, res) => {
 
 // ==================== ROTAS (CRUD) ====================
 
-// 1. FORNECEDORES (CREATE)
+// 1. FORNECEDORES
 app.post('/api/registos/supplier', async (req, res) => {
   try {
     const { id, registo_id, supplierName, name, supplierEmail, email, supplierPhone, phone, supplierAddress, address, timestamp } = req.body;
@@ -76,7 +93,7 @@ app.post('/api/registos/supplier', async (req, res) => {
   }
 });
 
-// 2. FILAMENTOS (CREATE)
+// 2. FILAMENTOS
 app.post('/api/registos/filament', async (req, res) => {
   try {
     const data = req.body;
@@ -90,40 +107,43 @@ app.post('/api/registos/filament', async (req, res) => {
   }
 });
 
-// 3. PRODUTOS (CREATE)
+// 3. PRODUTOS (AHORA CON COMPOSICIÓN JSON)
 app.post('/api/registos/product', async (req, res) => {
   try {
     const data = req.body;
-    const sql = `INSERT INTO produtos (registo_id, barcode, name, productCategory, stock, cost, salePrice, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
+    // Guardamos la receta como string JSON
+    const compositionStr = JSON.stringify(data.composition || []);
+
+    const sql = `INSERT INTO produtos (registo_id, barcode, name, productCategory, stock, cost, salePrice, composition, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
     await pool.execute(sql, [
-      data.id || data.registo_id, data.barcode, data.name, data.productCategory, data.stock, data.cost, data.salePrice, data.timestamp
+      data.id || data.registo_id, data.barcode, data.name, data.productCategory, 
+      parseInt(data.stock), parseFloat(data.cost), parseFloat(data.salePrice), 
+      compositionStr,
+      data.timestamp
     ]);
     res.json({ success: true });
   } catch (error) {
-    res.status(500).json({ success: false });
+    res.status(500).json({ success: false, message: error.message });
   }
 });
 
-// 4. ENTRADAS (CREATE) - Compatible con Filamentos y Productos
+// 4. ENTRADAS
 app.post('/api/registos/purchase', async (req, res) => {
   try {
     const data = req.body;
-    // category puede ser 'filament' o 'product'
     const category = data.category || 'filament'; 
 
-    // 1. Guardar en el historial
     const sqlInsert = `INSERT INTO entradas (registo_id, filamentBarcode, quantityPurchased, purchaseDate, supplier, timestamp) VALUES (?, ?, ?, ?, ?, ?)`;
     
     await pool.execute(sqlInsert, [
       data.id || data.registo_id, 
-      data.barcode || data.filamentBarcode, // Acepta ambos nombres
+      data.barcode || data.filamentBarcode,
       parseFloat(data.quantityPurchased), 
       data.purchaseDate, 
       data.supplier, 
       data.timestamp
     ]);
 
-    // 2. SI ES UN PRODUTO -> AUMENTAR STOCK
     if (category === 'product') {
         const sqlUpdateStock = `UPDATE produtos SET stock = stock + ? WHERE barcode = ?`;
         await pool.execute(sqlUpdateStock, [parseFloat(data.quantityPurchased), data.barcode || data.filamentBarcode]);
@@ -136,7 +156,7 @@ app.post('/api/registos/purchase', async (req, res) => {
   }
 });
 
-// 5. IMPRESSÕES (CREATE)
+// 5. IMPRESSÕES
 app.post('/api/registos/print', async (req, res) => {
   try {
     const data = req.body;
@@ -151,7 +171,7 @@ app.post('/api/registos/print', async (req, res) => {
   }
 });
 
-// 6. VENDAS (CREATE)
+// 6. VENDAS
 app.post('/api/registos/sale', async (req, res) => {
   try {
     const data = req.body;
@@ -167,6 +187,20 @@ app.post('/api/registos/sale', async (req, res) => {
   }
 });
 
+// 7. PEDIDOS (CREATE)
+app.post('/api/registos/order', async (req, res) => {
+    try {
+        const data = req.body;
+        const sql = `INSERT INTO pedidos (registo_id, clientName, productBarcode, quantity, dueDate, status, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)`;
+        await pool.execute(sql, [
+            data.id, data.clientName, data.productBarcode, data.quantity, data.dueDate, 'pendente', data.timestamp
+        ]);
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ success: false, message: e.message });
+    }
+});
+
 // ==================== LISTAR TUDO (GET) ====================
 app.get('/api/registos', async (req, res) => {
   try {
@@ -177,8 +211,17 @@ app.get('/api/registos', async (req, res) => {
     const [suppliers] = await pool.execute('SELECT * FROM fornecedores');
     allRecords = allRecords.concat(suppliers.map(s => ({ ...s, id: s.registo_id, type: 'supplier', supplierName: s.supplierName })));
 
+    // MODIFICADO: Recuperamos composition (JSON) en vez de estimatedWeight
     const [products] = await pool.execute('SELECT * FROM produtos');
-    allRecords = allRecords.concat(products.map(p => ({ ...p, id: p.registo_id, type: 'product', stock: parseInt(p.stock), salePrice: parseFloat(p.salePrice), cost: parseFloat(p.cost) })));
+    allRecords = allRecords.concat(products.map(p => ({ 
+        ...p, 
+        id: p.registo_id, 
+        type: 'product', 
+        stock: parseInt(p.stock), 
+        salePrice: parseFloat(p.salePrice), 
+        cost: parseFloat(p.cost),
+        composition: JSON.parse(p.composition || '[]') // Parseamos el JSON
+    })));
 
     const [purchases] = await pool.execute('SELECT * FROM entradas');
     allRecords = allRecords.concat(purchases.map(p => ({ ...p, id: p.registo_id, type: 'purchase', quantityPurchased: parseFloat(p.quantityPurchased) })));
@@ -189,13 +232,17 @@ app.get('/api/registos', async (req, res) => {
     const [sales] = await pool.execute('SELECT * FROM vendas');
     allRecords = allRecords.concat(sales.map(s => ({ ...s, id: s.registo_id, type: 'sale', quantitySold: parseInt(s.quantitySold), totalPrice: parseFloat(s.totalPrice) })));
 
+    const [orders] = await pool.execute('SELECT * FROM pedidos');
+    allRecords = allRecords.concat(orders.map(o => ({ ...o, id: o.registo_id, type: 'order', quantity: parseInt(o.quantity) })));
+
     res.json({ success: true, data: allRecords });
   } catch (error) {
+    console.error(error);
     res.status(500).json({ success: false });
   }
 });
 
-// 7. ELIMINAR (DELETE)
+// 8. ELIMINAR (DELETE GENERAL)
 app.delete('/api/registos/:type/:id', async (req, res) => {
     try {
         const { type, id } = req.params;
@@ -207,6 +254,7 @@ app.delete('/api/registos/:type/:id', async (req, res) => {
             case 'purchase': table = 'entradas'; break;
             case 'print': table = 'impressoes'; break;
             case 'sale': table = 'vendas'; break;
+            case 'order': table = 'pedidos'; break;
             default: return res.status(400).json({success: false});
         }
         const sql = `DELETE FROM ${table} WHERE registo_id = ? OR id = ?`;
@@ -217,15 +265,24 @@ app.delete('/api/registos/:type/:id', async (req, res) => {
     }
 });
 
+// 9. COMPLETAR PEDIDO
+app.put('/api/registos/order/:id/complete', async (req, res) => {
+    try {
+        const { id } = req.params;
+        await pool.execute("UPDATE pedidos SET status = 'concluido' WHERE registo_id = ? OR id = ?", [id, id]);
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ success: false });
+    }
+});
+
 // ==================== ATUALIZAR (PUT) ====================
 
-// 8. FILAMENTOS (Edit)
 app.put('/api/registos/filament/:id', async (req, res) => {
   try {
     const { id } = req.params; 
     const data = req.body;
     const sql = `UPDATE filamentos SET barcode = ?, name = ?, material = ?, color = ?, weightPerUnit = ?, pricePerUnit = ?, minStock = ?, supplier = ? WHERE registo_id = ? OR id = ?`;
-
     await pool.execute(sql, [
       data.barcode, data.name, data.material, data.color, parseFloat(data.weightPerUnit), parseFloat(data.pricePerUnit), parseFloat(data.minStock), data.supplier, id, id
     ]);
@@ -235,15 +292,20 @@ app.put('/api/registos/filament/:id', async (req, res) => {
   }
 });
 
-// 9. PRODUTOS (Edit)
+// EDITAR PRODUCTO (CON COMPOSICIÓN JSON)
 app.put('/api/registos/product/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const data = req.body;
-    const sql = `UPDATE produtos SET barcode = ?, name = ?, productCategory = ?, stock = ?, cost = ?, salePrice = ? WHERE registo_id = ? OR id = ?`;
+    const compositionStr = JSON.stringify(data.composition || []);
+
+    const sql = `UPDATE produtos SET barcode = ?, name = ?, productCategory = ?, stock = ?, cost = ?, salePrice = ?, composition = ? WHERE registo_id = ? OR id = ?`;
     
     await pool.execute(sql, [
-      data.barcode, data.name, data.productCategory, parseInt(data.stock), parseFloat(data.cost), parseFloat(data.salePrice), id, id
+      data.barcode, data.name, data.productCategory, parseInt(data.stock), 
+      parseFloat(data.cost), parseFloat(data.salePrice), 
+      compositionStr,
+      id, id
     ]);
     res.json({ success: true });
   } catch (error) {
@@ -251,7 +313,6 @@ app.put('/api/registos/product/:id', async (req, res) => {
   }
 });
 
-// 10. FORNECEDORES (Edit)
 app.put('/api/registos/supplier/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -264,13 +325,11 @@ app.put('/api/registos/supplier/:id', async (req, res) => {
   }
 });
 
-// 11. ENTRADAS (Edit)
 app.put('/api/registos/purchase/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const data = req.body;
     const sql = `UPDATE entradas SET filamentBarcode = ?, quantityPurchased = ?, purchaseDate = ?, supplier = ? WHERE registo_id = ? OR id = ?`;
-    
     await pool.execute(sql, [
       data.filamentBarcode, parseFloat(data.quantityPurchased), data.purchaseDate, data.supplier, id, id
     ]);
@@ -280,65 +339,35 @@ app.put('/api/registos/purchase/:id', async (req, res) => {
   }
 });
 
-// 12. IMPRESSÕES (Edit)
 app.put('/api/registos/print/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const data = req.body;
     const filamentsString = JSON.stringify(data.filamentsUsed || []);
-
     const sql = `UPDATE impressoes SET printName = ?, filamentsUsed = ?, notes = ? WHERE registo_id = ? OR id = ?`;
-
-    await pool.execute(sql, [
-      data.printName, filamentsString, data.notes, id, id
-    ]);
+    await pool.execute(sql, [data.printName, filamentsString, data.notes, id, id]);
     res.json({ success: true, message: 'Impressão atualizada' });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 });
 
-// 13. VENDAS (Edit) - CON AJUSTE DE STOCK
 app.put('/api/registos/sale/:id', async (req, res) => {
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
-
     const { id } = req.params;
     const data = req.body;
-
-    // 1. Obtener venta ORIGINAL
     const [oldSaleRows] = await connection.execute('SELECT * FROM vendas WHERE registo_id = ? OR id = ?', [id, id]);
-    
-    if (oldSaleRows.length === 0) {
-        throw new Error('Venda não encontrada');
-    }
+    if (oldSaleRows.length === 0) throw new Error('Venda não encontrada');
     const oldSale = oldSaleRows[0];
-
-    // 2. REVERTIR STOCK (Devolver stock original)
-    await connection.execute(
-        'UPDATE produtos SET stock = stock + ? WHERE barcode = ?',
-        [oldSale.quantitySold, oldSale.productBarcode]
-    );
-
-    // 3. ACTUALIZAR VENTA
-    const sqlUpdateVenda = `UPDATE vendas SET productBarcode = ?, quantitySold = ?, totalPrice = ?, saleDate = ? WHERE registo_id = ? OR id = ?`;
-    await connection.execute(sqlUpdateVenda, [
-        data.productBarcode, data.quantitySold, data.totalPrice, data.saleDate, id, id
-    ]);
-
-    // 4. APLICAR NUEVO STOCK
-    await connection.execute(
-        'UPDATE produtos SET stock = stock - ? WHERE barcode = ?',
-        [data.quantitySold, data.productBarcode]
-    );
-
+    await connection.execute('UPDATE produtos SET stock = stock + ? WHERE barcode = ?', [oldSale.quantitySold, oldSale.productBarcode]);
+    await connection.execute('UPDATE vendas SET productBarcode = ?, quantitySold = ?, totalPrice = ?, saleDate = ? WHERE registo_id = ? OR id = ?', [data.productBarcode, data.quantitySold, data.totalPrice, data.saleDate, id, id]);
+    await connection.execute('UPDATE produtos SET stock = stock - ? WHERE barcode = ?', [data.quantitySold, data.productBarcode]);
     await connection.commit();
     res.json({ success: true, message: 'Venda e stock atualizados' });
-
   } catch (error) {
     await connection.rollback();
-    console.error('Erro update sale:', error);
     res.status(500).json({ success: false, message: error.message });
   } finally {
     connection.release();

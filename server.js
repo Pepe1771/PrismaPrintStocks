@@ -199,14 +199,13 @@ app.delete('/api/registos/:type/:id', async (req, res) => {
     }
 });
 
-// ==================== ATUALIZAR (PUT) - COM BARCODE ====================
+// ==================== ATUALIZAR (PUT) ====================
 
 // 8. FILAMENTOS (Edit)
 app.put('/api/registos/filament/:id', async (req, res) => {
   try {
     const { id } = req.params; 
     const data = req.body;
-    // AGORA ATUALIZA O BARCODE TAMBÉM
     const sql = `UPDATE filamentos SET barcode = ?, name = ?, material = ?, color = ?, weightPerUnit = ?, pricePerUnit = ?, minStock = ?, supplier = ? WHERE registo_id = ? OR id = ?`;
 
     await pool.execute(sql, [
@@ -223,7 +222,6 @@ app.put('/api/registos/product/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const data = req.body;
-    // AGORA ATUALIZA O BARCODE TAMBÉM
     const sql = `UPDATE produtos SET barcode = ?, name = ?, productCategory = ?, stock = ?, cost = ?, salePrice = ? WHERE registo_id = ? OR id = ?`;
     
     await pool.execute(sql, [
@@ -247,6 +245,23 @@ app.put('/api/registos/supplier/:id', async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 });
+
+// 11. ENTRADAS (Edit) - NUEVO
+app.put('/api/registos/purchase/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const data = req.body;
+    const sql = `UPDATE entradas SET filamentBarcode = ?, quantityPurchased = ?, purchaseDate = ?, supplier = ? WHERE registo_id = ? OR id = ?`;
+    
+    await pool.execute(sql, [
+      data.filamentBarcode, parseFloat(data.quantityPurchased), data.purchaseDate, data.supplier, id, id
+    ]);
+    res.json({ success: true, message: 'Entrada atualizada' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 
 async function startServer() {
   await initDatabase();

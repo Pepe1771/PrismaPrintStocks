@@ -11,12 +11,12 @@ app.use(cors());
 app.use(bodyParser.json());
 app.use(express.static('public'));
 
-// ✅ TU CONFIGURACIÓN SEGURA (VARIABLES DE ENTORNO)
+// ⚠️ CONFIGURACIÓN BASE DE DATOS
 const dbConfig = {
-  host: process.env.DB_HOST || 'localhost',
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'gestor_stock_3d',
+  host: process.env.DB_HOST || 'brwoyne0kdmzihfvxpsy-mysql.services.clever-cloud.com',
+  user: process.env.DB_USER || 'uomilxwzl7eg3pgs',    
+  password: process.env.DB_PASSWORD || 'ig3eqDdOuC8HNIY81eiU', 
+  database: process.env.DB_NAME || 'brwoyne0kdmzihfvxpsy',
   port: process.env.DB_PORT || 3306,
   waitForConnections: true,
   connectionLimit: 10,
@@ -28,7 +28,7 @@ let pool;
 async function initDatabase() {
   try {
     pool = mysql.createPool(dbConfig);
-    console.log('✅ MySQL Conectado (usando variables de entorno)');
+    console.log('✅ MySQL Conectado a Clever Cloud');
     
     const connection = await pool.getConnection();
 
@@ -48,15 +48,12 @@ async function initDatabase() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
     
-    // 2. MIGRACIONES AUTOMÁTICAS (Añadir columnas nuevas si faltan)
-    
-    // Columna 'composition' en Productos (para las recetas)
+    // 2. ACTUALIZACIONES DE ESTRUCTURA (Por si las tablas ya existían)
     try {
         await connection.execute("ALTER TABLE produtos ADD COLUMN composition LONGTEXT");
         console.log("Column 'composition' added to produtos");
     } catch (e) { /* Ignorar si ya existe */ }
 
-    // Columnas nuevas en Pedidos
     try {
         await connection.execute("ALTER TABLE pedidos ADD COLUMN orderType VARCHAR(20) DEFAULT 'standard'");
         await connection.execute("ALTER TABLE pedidos ADD COLUMN composition LONGTEXT");
@@ -66,7 +63,7 @@ async function initDatabase() {
     connection.release();
   } catch (error) {
     console.error('❌ Error Conexión DB:', error.message);
-    console.error('⚠️ ASEGÚRATE DE CONFIGURAR LAS "ENVIRONMENT VARIABLES" EN RENDER');
+    console.error('👉 REVISA QUE HAYAS PUESTO EL USUARIO Y CONTRASEÑA EN dbConfig');
   }
 }
 
@@ -122,7 +119,7 @@ app.post('/api/registos/filament', async (req, res) => {
   }
 });
 
-// 3. PRODUTOS (CON RECETA - JSON)
+// 3. PRODUTOS (CON RECETA)
 app.post('/api/registos/product', async (req, res) => {
   try {
     const data = req.body;
@@ -184,7 +181,7 @@ app.post('/api/registos/print', async (req, res) => {
   }
 });
 
-// 6. VENDAS (CON TRANSACCIÓN DE STOCK)
+// 6. VENDAS
 app.post('/api/registos/sale', async (req, res) => {
   try {
     const data = req.body;

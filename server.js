@@ -21,16 +21,41 @@ const dbConfig = {
   connectionLimit: 10,
   queueLimit: 0
 };
+const express = require('express');
+const mysql = require('mysql2/promise');
+const cors = require('cors');
+const bodyParser = require('body-parser');
+require('dotenv').config();
+
+const app = express();
+const PORT = process.env.PORT || 3001;
+
+app.use(cors());
+app.use(bodyParser.json());
+app.use(express.static('public'));
+
+// ⚠️ CONFIGURACIÓN BASE DE DATOS
+const dbConfig = {
+  host: process.env.DB_HOST || 'brwoyne0kdmzihfvxpsy-mysql.services.clever-cloud.com',
+  user: process.env.DB_USER || 'PON_TU_USUARIO_AQUI',       // <--- CAMBIAR (Empieza por u...)
+  password: process.env.DB_PASSWORD || 'PON_TU_CONTRASEÑA_AQUI', // <--- CAMBIAR
+  database: process.env.DB_NAME || 'brwoyne0kdmzihfvxpsy',
+  port: process.env.DB_PORT || 3306,
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0
+};
+
 let pool;
 
 async function initDatabase() {
   try {
     pool = mysql.createPool(dbConfig);
-    console.log('✅ MySQL Conectado');
+    console.log('✅ MySQL Conectado a Clever Cloud');
     
     const connection = await pool.getConnection();
 
-    // TABLA PEDIDOS (Mantenemos la estructura antigua por si acaso, pero la lógica nueva la gestiona abajo)
+    // 1. TABLA PEDIDOS (Si no existe, la crea)
     await connection.execute(`
       CREATE TABLE IF NOT EXISTS pedidos (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -40,35 +65,28 @@ async function initDatabase() {
         quantity INT,
         dueDate DATE,
         status VARCHAR(20) DEFAULT 'pendente',
-        timestamp VARCHAR(50)
+        timestamp VARCHAR(50),
+        orderType VARCHAR(20) DEFAULT 'standard',
+        composition LONGTEXT
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
-
-    // --- MIGRACIONES AUTOMÁTICAS PARA SOPORTAR ENCOMENDAS ---
     
-    // 1. Composition en Productos
+    // 2. ACTUALIZACIONES DE ESTRUCTURA (Por si las tablas ya existían)
     try {
         await connection.execute("ALTER TABLE produtos ADD COLUMN composition LONGTEXT");
         console.log("Column 'composition' added to produtos");
-    } catch (e) { /* Ignoramos si ya existe */ }
+    } catch (e) { /* Ignorar si ya existe */ }
 
-    // 2. OrderType en Pedidos
     try {
         await connection.execute("ALTER TABLE pedidos ADD COLUMN orderType VARCHAR(20) DEFAULT 'standard'");
-        console.log("Column 'orderType' added to pedidos");
-    } catch (e) { /* Ignoramos si ya existe */ }
-
-    // 3. Composition en Pedidos (para personalizados)
-    try {
         await connection.execute("ALTER TABLE pedidos ADD COLUMN composition LONGTEXT");
-        console.log("Column 'composition' added to pedidos");
-    } catch (e) { /* Ignoramos si ya existe */ }
+        console.log("Columns added to pedidos");
+    } catch (e) { /* Ignorar si ya existe */ }
 
     connection.release();
-    console.log('✅ Base de datos verificada y actualizada');
   } catch (error) {
     console.error('❌ Error Conexión DB:', error.message);
-    console.error('⚠️ Verifica que has puesto el USUARIO y CONTRASEÑA de Clever Cloud en dbConfig');
+    console.error('👉 REVISA QUE HAYAS PUESTO EL USUARIO Y CONTRASEÑA EN dbConfig');
   }
 }
 
@@ -124,11 +142,11 @@ app.post('/api/registos/filament', async (req, res) => {
   }
 });
 
-// 3. PRODUTOS (Con Composición)
+// 3. PRODUTOS (CON RECETA)
 app.post('/api/registos/product', async (req, res) => {
   try {
     const data = req.body;
-    const compositionStr = JSON.stringify(data.composition || []);
+    const compositionStr = JSON.stringify(data.composition || []); // Guardamos la receta
 
     const sql = `INSERT INTO produtos (registo_id, barcode, name, productCategory, stock, cost, salePrice, composition, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
     await pool.execute(sql, [
@@ -202,26 +220,17 @@ app.post('/api/registos/sale', async (req, res) => {
   }
 });
 
-// 7. PEDIDOS (Soporte para Custom y Standard)
+// 7. PEDIDOS (SOPORTE PARA CUSTOM Y STANDARD)
 app.post('/api/registos/order', async (req, res) => {
     try {
         const data = req.body;
         const compositionStr = JSON.stringify(data.composition || []);
-        
-        // orderType por defecto es 'standard' si no viene
         const orderType = data.orderType || 'standard';
         
         const sql = `INSERT INTO pedidos (registo_id, clientName, productBarcode, quantity, dueDate, status, orderType, composition, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
         await pool.execute(sql, [
-            data.id, 
-            data.clientName, 
-            data.productBarcode, 
-            data.quantity, 
-            data.dueDate, 
-            'pendente',
-            orderType,
-            compositionStr,
-            data.timestamp
+            data.id, data.clientName, data.productBarcode, data.quantity, data.dueDate, 
+            'pendente', orderType, compositionStr, data.timestamp
         ]);
         res.json({ success: true });
     } catch (e) {
@@ -242,7 +251,7 @@ app.get('/api/registos', async (req, res) => {
     const [suppliers] = await pool.execute('SELECT * FROM fornecedores');
     allRecords = allRecords.concat(suppliers.map(s => ({ ...s, id: s.registo_id, type: 'supplier', supplierName: s.supplierName })));
 
-    // Produtos (Parse JSON composition)
+    // Produtos (Parseamos JSON composition)
     const [products] = await pool.execute('SELECT * FROM produtos');
     allRecords = allRecords.concat(products.map(p => ({ 
         ...p, 
@@ -266,14 +275,14 @@ app.get('/api/registos', async (req, res) => {
     const [sales] = await pool.execute('SELECT * FROM vendas');
     allRecords = allRecords.concat(sales.map(s => ({ ...s, id: s.registo_id, type: 'sale', quantitySold: parseInt(s.quantitySold), totalPrice: parseFloat(s.totalPrice) })));
 
-    // Pedidos (Parse JSON composition)
+    // Pedidos (Parseamos JSON composition y orderType)
     const [orders] = await pool.execute('SELECT * FROM pedidos');
     allRecords = allRecords.concat(orders.map(o => ({ 
         ...o, 
         id: o.registo_id, 
         type: 'order', 
         quantity: parseInt(o.quantity),
-        composition: JSON.parse(o.composition || '[]') // Parseamos composición custom
+        composition: JSON.parse(o.composition || '[]') 
     })));
 
     res.json({ success: true, data: allRecords });
@@ -306,7 +315,7 @@ app.delete('/api/registos/:type/:id', async (req, res) => {
     }
 });
 
-// 9. COMPLETAR PEDIDO
+// 9. COMPLETAR PEDIDO (CAMBIO DE ESTADO)
 app.put('/api/registos/order/:id/status', async (req, res) => {
     try {
         const { id } = req.params;
@@ -318,7 +327,7 @@ app.put('/api/registos/order/:id/status', async (req, res) => {
     }
 });
 
-// ==================== ATUALIZAR (PUT) ====================
+// ==================== ATUALIZAR (PUT - Otros registros) ====================
 
 app.put('/api/registos/filament/:id', async (req, res) => {
   try {
@@ -341,28 +350,20 @@ app.put('/api/registos/product/:id', async (req, res) => {
 
 app.put('/api/registos/supplier/:id', async (req, res) => {
   try {
-    const { id } = req.params;
-    const data = req.body;
+    const { id } = req.params; const data = req.body;
     const sql = `UPDATE fornecedores SET supplierName = ?, supplierEmail = ?, supplierPhone = ?, supplierAddress = ? WHERE registo_id = ? OR id = ?`;
     await pool.execute(sql, [data.supplierName, data.supplierEmail, data.supplierPhone, data.supplierAddress, id, id]);
     res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
+  } catch (error) { res.status(500).json({ success: false, message: error.message }); }
 });
 
 app.put('/api/registos/purchase/:id', async (req, res) => {
   try {
-    const { id } = req.params;
-    const data = req.body;
+    const { id } = req.params; const data = req.body;
     const sql = `UPDATE entradas SET filamentBarcode = ?, quantityPurchased = ?, purchaseDate = ?, supplier = ? WHERE registo_id = ? OR id = ?`;
-    await pool.execute(sql, [
-      data.filamentBarcode, parseFloat(data.quantityPurchased), data.purchaseDate, data.supplier, id, id
-    ]);
-    res.json({ success: true, message: 'Entrada atualizada' });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
+    await pool.execute(sql, [data.filamentBarcode, parseFloat(data.quantityPurchased), data.purchaseDate, data.supplier, id, id]);
+    res.json({ success: true });
+  } catch (error) { res.status(500).json({ success: false, message: error.message }); }
 });
 
 app.put('/api/registos/print/:id', async (req, res) => {
@@ -371,7 +372,7 @@ app.put('/api/registos/print/:id', async (req, res) => {
     const filamentsString = JSON.stringify(data.filamentsUsed || []);
     const sql = `UPDATE impressoes SET printName = ?, filamentsUsed = ?, notes = ? WHERE registo_id = ? OR id = ?`;
     await pool.execute(sql, [data.printName, filamentsString, data.notes, id, id]);
-    res.json({ success: true, message: 'Impressão atualizada' });
+    res.json({ success: true });
   } catch (error) { res.status(500).json({ success: false, message: error.message }); }
 });
 

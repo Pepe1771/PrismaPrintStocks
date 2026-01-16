@@ -203,13 +203,26 @@ app.post('/api/registos/order', async (req, res) => {
         const compositionStr = JSON.stringify(data.composition || []);
         const orderType = data.orderType || 'standard';
         
+        // CORRECCIÓN: Si no hay código de barras (pedido custom), enviamos NULL
+        const productBarcode = data.productBarcode || null; 
+
         const sql = `INSERT INTO pedidos (registo_id, clientName, productBarcode, quantity, dueDate, status, orderType, composition, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+        
         await pool.execute(sql, [
-            data.id, data.clientName, data.productBarcode, data.quantity, data.dueDate, 
-            'pendente', orderType, compositionStr, data.timestamp
+            data.id, 
+            data.clientName, 
+            productBarcode, // <--- Aquí estaba el error (antes era data.productBarcode)
+            data.quantity, 
+            data.dueDate, 
+            'pendente', 
+            orderType, 
+            compositionStr, 
+            data.timestamp
         ]);
+        
         res.json({ success: true });
     } catch (e) {
+        console.error("Error al crear pedido:", e); // Añadí un log para que veas el error en la consola de Render si vuelve a pasar
         res.status(500).json({ success: false, message: e.message });
     }
 });

@@ -79,7 +79,7 @@ async function initDatabase() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
 
-    // Migraciones de seguridad por si faltan columnas
+    // Migraciones de seguridad por si faltan columnas en tablas antiguas
     try { await connection.execute("ALTER TABLE produtos ADD COLUMN composition LONGTEXT"); } catch (e) {}
     try { await connection.execute("ALTER TABLE produtos ADD COLUMN printTime INT DEFAULT 0"); } catch (e) {}
     try { await connection.execute("ALTER TABLE pedidos ADD COLUMN orderType VARCHAR(20) DEFAULT 'standard'"); } catch (e) {}

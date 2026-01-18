@@ -196,37 +196,41 @@ app.post('/api/registos/sale', async (req, res) => {
   }
 });
 
-// 7. PEDIDOS (SOPORTE PARA CUSTOM Y STANDARD)
+// 7. PEDIDOS (SOPORTE PARA CUSTOM Y STANDARD + TIEMPO)
 app.post('/api/registos/order', async (req, res) => {
     try {
         const data = req.body;
         const compositionStr = JSON.stringify(data.composition || []);
         const orderType = data.orderType || 'standard';
+        const productBarcode = data.productBarcode || null;
         
-        // CORRECCIÓN: Si no hay código de barras (pedido custom), enviamos NULL
-        const productBarcode = data.productBarcode || null; 
+        // CORRECCIÓN: Capturamos el tiempo de impresión (printTime)
+        // Si es standard, quizás venga 0 y lo sacamos del producto luego, 
+        // pero si es custom, viene aquí.
+        const printTime = parseInt(data.printTime) || 0; 
 
-        const sql = `INSERT INTO pedidos (registo_id, clientName, productBarcode, quantity, dueDate, status, orderType, composition, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+        // SQL ACTUALIZADO: Añadimos printTime
+        const sql = `INSERT INTO pedidos (registo_id, clientName, productBarcode, quantity, dueDate, status, orderType, composition, timestamp, printTime) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
         
         await pool.execute(sql, [
             data.id, 
             data.clientName, 
-            productBarcode, // <--- Aquí estaba el error (antes era data.productBarcode)
+            productBarcode, 
             data.quantity, 
             data.dueDate, 
             'pendente', 
             orderType, 
             compositionStr, 
-            data.timestamp
+            data.timestamp,
+            printTime // <--- Nuevo campo guardado
         ]);
         
         res.json({ success: true });
     } catch (e) {
-        console.error("Error al crear pedido:", e); // Añadí un log para que veas el error en la consola de Render si vuelve a pasar
+        console.error("Error al crear pedido:", e); 
         res.status(500).json({ success: false, message: e.message });
     }
 });
-
 // ==================== LISTAR TUDO (GET) ====================
 app.get('/api/registos', async (req, res) => {
   try {

@@ -296,7 +296,7 @@ app.put('/api/registos/order/:id/status', async (req, res) => {
 });
 
 // ==========================================
-// 6. ROTA DELETE (ELIMINAR)
+// 6. ROTA DELETE (ELIMINAR) - CORREGIDO
 // ==========================================
 app.delete('/api/registos/:type/:id', async (req, res) => {
     const { type, id } = req.params;
@@ -304,7 +304,7 @@ app.delete('/api/registos/:type/:id', async (req, res) => {
     
     switch(type) {
         case 'filament': table = 'filamentos'; break;
-        case 'product': table = 'produtos'; break;
+        case 'product': table = 'produtos'; break; // Atención: tabla 'produtos' (portugués) o 'productos'? Revisa tu DB.
         case 'supplier': table = 'fornecedores'; break;
         case 'purchase': table = 'entradas'; break;
         case 'print': table = 'impressoes'; break;
@@ -314,16 +314,20 @@ app.delete('/api/registos/:type/:id', async (req, res) => {
         case 'schedule': table = 'agendamentos'; break;
     }
 
+    // Si tu tabla de productos se llama 'productos' en español en la DB, descomenta esto:
+    // if (type === 'product') table = 'productos'; 
+
     if (!table) return res.status(400).json({ success: false });
 
     try {
-        await pool.execute(`DELETE FROM ${table} WHERE registo_id = ?`, [id]);
+        // CORRECCIÓN AQUÍ: Borrar por registo_id O por id numérico
+        await pool.execute(`DELETE FROM ${table} WHERE registo_id = ? OR id = ?`, [id, id]);
         res.json({ success: true });
     } catch (e) {
+        console.error("Error al eliminar:", e);
         res.status(500).json({ success: false, message: e.message });
     }
 });
-
 // ==========================================
 // 7. FUNCIONALIDADE AVANÇADA: INCIDENTES (REAGENDAMENTO)
 // ==========================================

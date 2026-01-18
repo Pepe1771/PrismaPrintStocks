@@ -131,39 +131,70 @@ app.get('/api/registos', async (req, res) => {
     try {
         let allData = [];
         
-        // Funções auxiliares de query
+        // Función auxiliar para leer tablas y formatear el ID
         const getTable = async (table, type, extraMap = data => data) => {
             const [rows] = await pool.execute(`SELECT * FROM ${table}`);
             return rows.map(r => ({ ...r, id: r.registo_id, type, ...extraMap(r) }));
         };
 
+        // 1. Cargar tablas básicas
         const filamentos = await getTable('filamentos', 'filament', r => ({
-            weightPerUnit: parseFloat(r.weightPerUnit), pricePerUnit: parseFloat(r.pricePerUnit), minStock: parseFloat(r.minStock)
+            weightPerUnit: parseFloat(r.weightPerUnit), 
+            pricePerUnit: parseFloat(r.pricePerUnit), 
+            minStock: parseFloat(r.minStock)
         }));
         
+        // Nota: Asegúrate de que en tu DB la tabla se llama 'produtos' (portugués) o 'productos'
         const produtos = await getTable('produtos', 'product', r => ({
-            stock: parseInt(r.stock), salePrice: parseFloat(r.salePrice), cost: parseFloat(r.cost), composition: JSON.parse(r.composition || '[]')
+            stock: parseInt(r.stock), 
+            salePrice: parseFloat(r.salePrice), 
+            cost: parseFloat(r.cost), 
+            composition: JSON.parse(r.composition || '[]')
         }));
 
         const fornecedores = await getTable('fornecedores', 'supplier');
-        const entradas = await getTable('entradas', 'purchase', r => ({ quantityPurchased: parseFloat(r.quantityPurchased) }));
-        const impressoes = await getTable('impressoes', 'print', r => ({ filamentsUsed: JSON.parse(r.filamentsUsed || '[]') }));
-        const vendas = await getTable('vendas', 'sale', r => ({ quantitySold: parseInt(r.quantitySold), totalPrice: parseFloat(r.totalPrice) }));
-        const pedidos = await getTable('pedidos', 'order', r => ({ quantity: parseInt(r.quantity), composition: JSON.parse(r.composition || '[]') }));
         
-        // Novas tabelas
-        const maquinas = await getTable('maquinas', 'machine');
-        const agendamentos = await getTable('agendamentos', 'schedule');
+        const entradas = await getTable('entradas', 'purchase', r => ({ 
+            quantityPurchased: parseFloat(r.quantityPurchased) 
+        }));
+        
+        const impressoes = await getTable('impressoes', 'print', r => ({ 
+            filamentsUsed: JSON.parse(r.filamentsUsed || '[]') 
+        }));
+        
+        const vendas = await getTable('vendas', 'sale', r => ({ 
+            quantitySold: parseInt(r.quantitySold), 
+            totalPrice: parseFloat(r.totalPrice) 
+        }));
+        
+        const pedidos = await getTable('pedidos', 'order', r => ({ 
+            quantity: parseInt(r.quantity), 
+            composition: JSON.parse(r.composition || '[]') 
+        }));
 
+        // 2. Cargar tablas nuevas (Máquinas y Calendario)
+        const maquinas = await getTable('maquinas', 'machine');
+
+        // 3. Cargar y CORREGIR el Calendario
+        const agendamentosRaw = await getTable('agendamentos', 'schedule');
+
+        // Corrección clave: Cambiar el espacio de MySQL por la 'T' ISO que necesita el Javascript
+        const agendamentos = agendamentosRaw.map(a => ({
+            ...a,
+            start: a.start ? a.start.replace(' ', 'T') : null,
+            end: a.end ? a.end.replace(' ', 'T') : null
+        }));
+
+        // 4. Unir todo y enviar
         allData = [...filamentos, ...produtos, ...fornecedores, ...entradas, ...impressoes, ...vendas, ...pedidos, ...maquinas, ...agendamentos];
         
         res.json({ success: true, data: allData });
+
     } catch (error) {
-        console.error(error);
+        console.error("Error en GET /api/registos:", error);
         res.status(500).json({ success: false, message: error.message });
     }
 });
-
 // ==========================================
 // 4. ROTA POST (CRIAÇÃO UNIVERSAL)
 // ==========================================

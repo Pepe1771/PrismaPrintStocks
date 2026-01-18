@@ -48,6 +48,15 @@ async function initDatabase() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
 
+    // Tablas base (Filamentos, Productos, etc.)
+    await connection.execute(`CREATE TABLE IF NOT EXISTS filamentos (id INT AUTO_INCREMENT PRIMARY KEY, registo_id VARCHAR(50), barcode VARCHAR(100), name VARCHAR(100), material VARCHAR(50), color VARCHAR(50), weightPerUnit FLOAT, pricePerUnit FLOAT, minStock FLOAT, supplier VARCHAR(100), timestamp VARCHAR(50)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
+    await connection.execute(`CREATE TABLE IF NOT EXISTS produtos (id INT AUTO_INCREMENT PRIMARY KEY, registo_id VARCHAR(50), barcode VARCHAR(100), name VARCHAR(100), productCategory VARCHAR(50), stock INT, cost FLOAT, salePrice FLOAT, composition LONGTEXT, timestamp VARCHAR(50)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
+    await connection.execute(`CREATE TABLE IF NOT EXISTS entradas (id INT AUTO_INCREMENT PRIMARY KEY, registo_id VARCHAR(50), filamentBarcode VARCHAR(100), quantityPurchased FLOAT, purchaseDate DATE, supplier VARCHAR(100), timestamp VARCHAR(50)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
+    await connection.execute(`CREATE TABLE IF NOT EXISTS impressoes (id INT AUTO_INCREMENT PRIMARY KEY, registo_id VARCHAR(50), printName VARCHAR(100), filamentsUsed LONGTEXT, notes TEXT, timestamp VARCHAR(50)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
+    await connection.execute(`CREATE TABLE IF NOT EXISTS vendas (id INT AUTO_INCREMENT PRIMARY KEY, registo_id VARCHAR(50), productBarcode VARCHAR(100), quantitySold INT, totalPrice FLOAT, saleDate DATE, timestamp VARCHAR(50)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
+    await connection.execute(`CREATE TABLE IF NOT EXISTS fornecedores (id INT AUTO_INCREMENT PRIMARY KEY, registo_id VARCHAR(50), supplierName VARCHAR(100), supplierEmail VARCHAR(100), supplierPhone VARCHAR(50), supplierAddress VARCHAR(200), timestamp VARCHAR(50)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
+    await connection.execute(`CREATE TABLE IF NOT EXISTS utilizadores (id INT AUTO_INCREMENT PRIMARY KEY, username VARCHAR(50), password VARCHAR(255), name VARCHAR(100), role VARCHAR(50) DEFAULT 'admin') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
+
     // 2. NUEVAS TABLAS (MÁQUINAS Y CALENDARIO)
     await connection.execute(`
       CREATE TABLE IF NOT EXISTS maquinas (
@@ -160,7 +169,7 @@ app.post('/api/agendamentos/atraso', async (req, res) => {
     }
 });
 
-// ==================== RUTAS CRUD ESTÁNDAR (MANTENIDAS) ====================
+// ==================== RUTAS CRUD ESTÁNDAR ====================
 
 app.post('/api/registos/supplier', async (req, res) => {
   try {
@@ -295,7 +304,7 @@ app.delete('/api/registos/:type/:id', async (req, res) => {
     } catch (error) { res.status(500).json({ success: false, message: error.message }); }
 });
 
-// ACTUALIZACIONES (PUT) - Mantenemos las existentes y agregamos status orden
+// ACTUALIZACIONES (PUT)
 app.put('/api/registos/order/:id/status', async (req, res) => {
     try {
         const { id } = req.params; const { status } = req.body;
@@ -304,8 +313,29 @@ app.put('/api/registos/order/:id/status', async (req, res) => {
     } catch (e) { res.status(500).json({ success: false }); }
 });
 
-// ... [Aquí irían el resto de PUTs para editar filamentos, productos, etc. si se usan, mantenlos del backup original] ...
-// Para mantener el código limpio, asumo que usas el mismo patrón.
+app.put('/api/registos/:type/:id', async (req, res) => {
+  try {
+    const { type, id } = req.params;
+    const data = req.body;
+    let sql = '';
+    let params = [];
+    
+    // Simplificación para ediciones básicas (nombre, etc)
+    if (type === 'filament') {
+        sql = "UPDATE filamentos SET name=?, material=?, color=?, weightPerUnit=?, pricePerUnit=?, minStock=?, supplier=? WHERE registo_id=? OR id=?";
+        params = [data.name, data.material, data.color, data.weightPerUnit, data.pricePerUnit, data.minStock, data.supplier, id, id];
+    } else if (type === 'product') {
+        sql = "UPDATE produtos SET name=?, productCategory=?, stock=?, cost=?, salePrice=?, composition=? WHERE registo_id=? OR id=?";
+        params = [data.name, data.productCategory, data.stock, data.cost, data.salePrice, JSON.stringify(data.composition), id, id];
+    } else if (type === 'supplier') {
+        sql = "UPDATE fornecedores SET supplierName=?, supplierEmail=?, supplierPhone=?, supplierAddress=? WHERE registo_id=? OR id=?";
+        params = [data.supplierName, data.supplierEmail, data.supplierPhone, data.supplierAddress, id, id];
+    }
+
+    if(sql) await pool.execute(sql, params);
+    res.json({ success: true });
+  } catch(e) { res.status(500).json({success:false}); }
+});
 
 async function startServer() {
   await initDatabase();

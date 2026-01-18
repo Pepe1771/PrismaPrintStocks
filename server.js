@@ -33,7 +33,7 @@ async function initDatabase() {
     
     const connection = await pool.getConnection();
 
-    // 1. TABLA PEDIDOS
+    // TABLAS
     await connection.execute(`
       CREATE TABLE IF NOT EXISTS pedidos (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -50,7 +50,6 @@ async function initDatabase() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
 
-    // 2. TABLA MÁQUINAS (IMPRESORAS)
     await connection.execute(`
       CREATE TABLE IF NOT EXISTS maquinas (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -63,7 +62,6 @@ async function initDatabase() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
 
-    // 3. TABLA CALENDARIO (AGENDAMENTOS)
     await connection.execute(`
       CREATE TABLE IF NOT EXISTS agendamentos (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -79,7 +77,7 @@ async function initDatabase() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
 
-    // Migraciones de seguridad por si faltan columnas en tablas antiguas
+    // Migraciones
     try { await connection.execute("ALTER TABLE produtos ADD COLUMN composition LONGTEXT"); } catch (e) {}
     try { await connection.execute("ALTER TABLE produtos ADD COLUMN printTime INT DEFAULT 0"); } catch (e) {}
     try { await connection.execute("ALTER TABLE pedidos ADD COLUMN orderType VARCHAR(20) DEFAULT 'standard'"); } catch (e) {}
@@ -92,14 +90,18 @@ async function initDatabase() {
   }
 }
 
-// MIDDLEWARE DE SEGURIDAD
+// --- SEGURIDAD ACTIVADA (LOGIN REAL) ---
 const verificarToken = (req, res, next) => {
     const token = req.headers['authorization'];
-    if (!token) return res.status(403).json({ success: false, message: 'No token' });
+    if (!token) return res.status(403).json({ success: false, message: 'No token provided' });
+    
+    // Quitamos 'Bearer ' si viene en el header
     const tokenLimpio = token.replace('Bearer ', '');
+    
     jwt.verify(tokenLimpio, SECRET_KEY, (err, decoded) => {
-        if (err) return res.status(401).json({ success: false });
-        req.userId = decoded.id; next();
+        if (err) return res.status(401).json({ success: false, message: 'Token inválido' });
+        req.userId = decoded.id; 
+        next();
     });
 };
 
@@ -107,20 +109,24 @@ const verificarToken = (req, res, next) => {
 app.post('/api/login', async (req, res) => {
   try {
     const { username, password } = req.body;
+    // Buscamos usuario en la DB
     const [rows] = await pool.execute('SELECT id, username, name, role FROM utilizadores WHERE username = ? AND password = ?', [username, password]);
+    
     if (rows.length > 0) {
+      // Generamos Token Real
       const token = jwt.sign({ id: rows[0].id }, SECRET_KEY, { expiresIn: '24h' });
       res.json({ success: true, user: rows[0], token });
-    } else { res.status(401).json({ success: false }); }
+    } else { 
+      res.status(401).json({ success: false, message: 'Credenciales incorrectas' }); 
+    }
   } catch (error) { res.status(500).json({ success: false }); }
 });
 
-// GET GLOBAL (OBTIENE TODOS LOS DATOS)
+// GET GLOBAL (PROTEGIDO)
 app.get('/api/registos', verificarToken, async (req, res) => {
   try {
     let allRecords = [];
     
-    // Tablas Originales
     const [fil] = await pool.execute('SELECT * FROM filamentos');
     allRecords = allRecords.concat(fil.map(f => ({ ...f, id: f.registo_id, type: 'filament', weightPerUnit: parseFloat(f.weightPerUnit), pricePerUnit: parseFloat(f.pricePerUnit), minStock: parseFloat(f.minStock) })));
     
@@ -142,7 +148,6 @@ app.get('/api/registos', verificarToken, async (req, res) => {
     const [ped] = await pool.execute('SELECT * FROM pedidos');
     allRecords = allRecords.concat(ped.map(o => ({ ...o, id: o.registo_id, type: 'order', quantity: parseInt(o.quantity), printTime: parseInt(o.printTime||0), composition: JSON.parse(o.composition || '[]') })));
 
-    // --- NUEVAS TABLAS ---
     const [maq] = await pool.execute('SELECT * FROM maquinas');
     allRecords = allRecords.concat(maq.map(m => ({ ...m, id: m.registo_id, type: 'printer' })));
 
@@ -153,40 +158,24 @@ app.get('/api/registos', verificarToken, async (req, res) => {
   } catch (error) { console.error(error); res.status(500).json({ success: false }); }
 });
 
-// --- RUTAS POST (CREAR) ---
-
-// 1. IMPRESORAS
+// RUTAS POST (PROTEGIDAS)
 app.post('/api/registos/printer', verificarToken, async (req, res) => {
     try { const d = req.body; await pool.execute("INSERT INTO maquinas (registo_id, nome, marca, modelo, timestamp) VALUES (?,?,?,?,?)", [d.id, d.nome, d.marca, d.modelo, d.timestamp]); res.json({ success: true }); } catch (e) { res.status(500).json({ success: false }); }
 });
 
-// 2. CALENDARIO (CON VALIDACIÓN DE CONFLICTOS)
 app.post('/api/registos/schedule', verificarToken, async (req, res) => {
     try {
         const { id, printer_id, title, start, end, filament_id, weight_used, color, timestamp } = req.body;
-        
-        // VALIDACIÓN: ¿Hay solapamiento en esa impresora?
         const [conflictos] = await pool.execute(
-            `SELECT * FROM agendamentos 
-             WHERE printer_id = ? 
-             AND (
-                (start < ? AND end > ?) OR 
-                (start < ? AND end > ?) OR 
-                (start >= ? AND end <= ?)
-             )`,
+            `SELECT * FROM agendamentos WHERE printer_id = ? AND ((start < ? AND end > ?) OR (start < ? AND end > ?) OR (start >= ? AND end <= ?))`,
             [printer_id, end, start, end, start, start, end]
         );
-
-        if (conflictos.length > 0) {
-            return res.json({ success: false, message: "⚠️ Conflito de horário! Essa impressora já está ocupada." });
-        }
-
+        if (conflictos.length > 0) { return res.json({ success: false, message: "⚠️ Conflito de horário! Essa impressora já está ocupada." }); }
         await pool.execute("INSERT INTO agendamentos (registo_id, printer_id, title, start, end, filament_id, weight_used, color, timestamp) VALUES (?,?,?,?,?,?,?,?,?)", [id, printer_id, title, start, end, filament_id, weight_used, color, timestamp]);
         res.json({ success: true });
     } catch (e) { res.status(500).json({ success: false, message: e.message }); }
 });
 
-// 3. RESTO DE RUTAS
 app.post('/api/registos/filament', verificarToken, async (req, res) => {
     try { const d = req.body; await pool.execute("INSERT INTO filamentos (registo_id, barcode, name, material, color, weightPerUnit, pricePerUnit, minStock, supplier, timestamp) VALUES (?,?,?,?,?,?,?,?,?,?)", [d.id, d.barcode, d.name, d.material, d.color, d.weightPerUnit, d.pricePerUnit, d.minStock, d.supplier, d.timestamp]); res.json({ success: true }); } catch (e) { res.status(500).json({ success: false }); }
 });
@@ -218,7 +207,7 @@ app.post('/api/registos/order', verificarToken, async (req, res) => {
     try { const d = req.body; await pool.execute("INSERT INTO pedidos (registo_id, clientName, productBarcode, quantity, dueDate, status, orderType, composition, printTime, timestamp) VALUES (?,?,?,?,?,?,?,?,?,?)", [d.id, d.clientName, d.productBarcode||null, d.quantity, d.dueDate, 'pendente', d.orderType, JSON.stringify(d.composition||[]), d.printTime||0, d.timestamp]); res.json({ success: true }); } catch (e) { res.status(500).json({ success: false }); }
 });
 
-// DELETE GENÉRICO
+// DELETE (PROTEGIDO)
 app.delete('/api/registos/:type/:id', verificarToken, async (req, res) => {
     try {
         const { type, id } = req.params;
@@ -232,7 +221,7 @@ app.delete('/api/registos/:type/:id', verificarToken, async (req, res) => {
     } catch (e) { res.status(500).json({ success: false }); }
 });
 
-// UPDATES
+// UPDATES (PROTEGIDOS)
 app.put('/api/registos/filament/:id', verificarToken, async (req, res) => {
   try { const { id } = req.params; const d = req.body; await pool.execute("UPDATE filamentos SET barcode=?, name=?, material=?, color=?, weightPerUnit=?, pricePerUnit=?, minStock=?, supplier=? WHERE registo_id=? OR id=?", [d.barcode, d.name, d.material, d.color, d.weightPerUnit, d.pricePerUnit, d.minStock, d.supplier, id, id]); res.json({ success: true }); } catch (e) { res.status(500).json({ success: false }); }
 });

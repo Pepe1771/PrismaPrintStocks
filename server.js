@@ -2,17 +2,16 @@ const express = require('express');
 const mysql = require('mysql2/promise');
 const cors = require('cors');
 const bodyParser = require('body-parser');
-const jwt = require('jsonwebtoken');
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3001;
-const SECRET_KEY = process.env.JWT_SECRET || 'secreto_super_seguro';
 
 app.use(cors());
 app.use(bodyParser.json());
 app.use(express.static('public'));
 
+// ✅ CONFIGURACIÓN SEGURA DE BASE DE DATOS
 const dbConfig = {
   host: process.env.DB_HOST || 'localhost',
   user: process.env.DB_USER || 'root',
@@ -30,143 +29,356 @@ async function initDatabase() {
   try {
     pool = mysql.createPool(dbConfig);
     console.log('✅ MySQL Conectado');
-    const c = await pool.getConnection(); // Test conexión
-    c.release();
-  } catch (error) { console.error('❌ Error DB:', error.message); }
+    
+    const connection = await pool.getConnection();
+
+    // 1. TABLA PEDIDOS (Si no existe, la crea)
+    await connection.execute(`
+      CREATE TABLE IF NOT EXISTS pedidos (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        registo_id VARCHAR(50),
+        clientName VARCHAR(100),
+        productBarcode VARCHAR(100),
+        quantity INT,
+        dueDate DATE,
+        status VARCHAR(20) DEFAULT 'pendente',
+        timestamp VARCHAR(50),
+        orderType VARCHAR(20) DEFAULT 'standard',
+        composition LONGTEXT
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
+    
+    // 2. MIGRACIONES (Añadir columnas nuevas si faltan)
+    try {
+        await connection.execute("ALTER TABLE produtos ADD COLUMN composition LONGTEXT");
+        console.log("Columna 'composition' añadida a produtos");
+    } catch (e) { /* Ignorar si ya existe */ }
+
+    try {
+        await connection.execute("ALTER TABLE pedidos ADD COLUMN orderType VARCHAR(20) DEFAULT 'standard'");
+        await connection.execute("ALTER TABLE pedidos ADD COLUMN composition LONGTEXT");
+        console.log("Columnas añadidas a pedidos");
+    } catch (e) { /* Ignorar si ya existe */ }
+
+    connection.release();
+  } catch (error) {
+    console.error('❌ Error Conexión DB:', error.message);
+  }
 }
 
-// MIDDLEWARE DE SEGURIDAD
-const verificarToken = (req, res, next) => {
-    const tokenHeader = req.headers['authorization'];
-    if (!tokenHeader) return res.status(403).json({ success: false, message: 'No token' });
-    
-    // Soportar "Bearer <token>" o solo "<token>"
-    const token = tokenHeader.replace('Bearer ', '');
-
-    jwt.verify(token, SECRET_KEY, (err, decoded) => {
-        if (err) return res.status(401).json({ success: false, message: 'Token inválido' });
-        req.userId = decoded.id;
-        next();
-    });
-};
-
-// LOGIN
+// ==================== AUTENTICAÇÃO ====================
 app.post('/api/login', async (req, res) => {
   try {
     const { username, password } = req.body;
-    const [rows] = await pool.execute('SELECT id, username, name, role FROM utilizadores WHERE username = ? AND password = ?', [username, password]);
+    const [rows] = await pool.execute(
+      'SELECT id, username, name, role FROM utilizadores WHERE username = ? AND password = ?',
+      [username, password]
+    );
     if (rows.length > 0) {
-      const token = jwt.sign({ id: rows[0].id }, SECRET_KEY, { expiresIn: '24h' });
-      res.json({ success: true, user: rows[0], token });
-    } else { res.status(401).json({ success: false }); }
-  } catch (error) { res.status(500).json({ success: false }); }
+      res.json({ success: true, user: rows[0] });
+    } else {
+      res.status(401).json({ success: false, message: 'Credenciales inválidas' });
+    }
+  } catch (error) {
+    res.status(500).json({ success: false });
+  }
 });
 
-// GET GLOBAL
-app.get('/api/registos', verificarToken, async (req, res) => {
+// ==================== ROTAS (CRUD) ====================
+
+// 1. FORNECEDORES
+app.post('/api/registos/supplier', async (req, res) => {
+  try {
+    const { id, registo_id, supplierName, name, supplierEmail, email, supplierPhone, phone, supplierAddress, address, timestamp } = req.body;
+    const finalID = id || registo_id; 
+    const finalName = supplierName || name; 
+    const finalEmail = supplierEmail || email;
+    const finalPhone = supplierPhone || phone;
+    const finalAddress = supplierAddress || address;
+
+    const sql = `INSERT INTO fornecedores (registo_id, supplierName, supplierEmail, supplierPhone, supplierAddress, timestamp) VALUES (?, ?, ?, ?, ?, ?)`;
+    const [result] = await pool.execute(sql, [finalID, finalName, finalEmail, finalPhone, finalAddress, timestamp]);
+    res.json({ success: true, backendId: result.insertId });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// 2. FILAMENTOS
+app.post('/api/registos/filament', async (req, res) => {
+  try {
+    const data = req.body;
+    const sql = `INSERT INTO filamentos (registo_id, barcode, name, material, color, weightPerUnit, pricePerUnit, minStock, supplier, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+    await pool.execute(sql, [
+      data.id || data.registo_id, data.barcode, data.name, data.material, data.color, parseFloat(data.weightPerUnit), parseFloat(data.pricePerUnit), parseFloat(data.minStock), data.supplier, data.timestamp
+    ]);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// 3. PRODUTOS (CON RECETA)
+app.post('/api/registos/product', async (req, res) => {
+  try {
+    const data = req.body;
+    const compositionStr = JSON.stringify(data.composition || []); 
+
+    const sql = `INSERT INTO produtos (registo_id, barcode, name, productCategory, stock, cost, salePrice, composition, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+    await pool.execute(sql, [
+      data.id || data.registo_id, data.barcode, data.name, data.productCategory, 
+      parseInt(data.stock), parseFloat(data.cost), parseFloat(data.salePrice), 
+      compositionStr,
+      data.timestamp
+    ]);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// 4. ENTRADAS
+app.post('/api/registos/purchase', async (req, res) => {
+  try {
+    const data = req.body;
+    const category = data.category || 'filament'; 
+
+    const sqlInsert = `INSERT INTO entradas (registo_id, filamentBarcode, quantityPurchased, purchaseDate, supplier, timestamp) VALUES (?, ?, ?, ?, ?, ?)`;
+    
+    await pool.execute(sqlInsert, [
+      data.id || data.registo_id, 
+      data.barcode || data.filamentBarcode,
+      parseFloat(data.quantityPurchased), 
+      data.purchaseDate, 
+      data.supplier, 
+      data.timestamp
+    ]);
+
+    if (category === 'product') {
+        const sqlUpdateStock = `UPDATE produtos SET stock = stock + ? WHERE barcode = ?`;
+        await pool.execute(sqlUpdateStock, [parseFloat(data.quantityPurchased), data.barcode || data.filamentBarcode]);
+    }
+
+    res.json({ success: true, message: 'Entrada registada' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// 5. IMPRESSÕES
+app.post('/api/registos/print', async (req, res) => {
+  try {
+    const data = req.body;
+    const filamentsString = JSON.stringify(data.filamentsUsed || []);
+    const sql = `INSERT INTO impressoes (registo_id, printName, filamentsUsed, notes, timestamp) VALUES (?, ?, ?, ?, ?)`;
+    await pool.execute(sql, [
+      data.id || data.registo_id, data.printName, filamentsString, data.notes, data.timestamp
+    ]);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// 6. VENDAS
+app.post('/api/registos/sale', async (req, res) => {
+  try {
+    const data = req.body;
+    const sqlVenda = `INSERT INTO vendas (registo_id, productBarcode, quantitySold, totalPrice, saleDate, timestamp) VALUES (?, ?, ?, ?, ?, ?)`;
+    await pool.execute(sqlVenda, [
+      data.id || data.registo_id, data.productBarcode, data.quantitySold, data.totalPrice, data.saleDate, data.timestamp
+    ]);
+    const sqlUpdateStock = `UPDATE produtos SET stock = stock - ? WHERE barcode = ?`;
+    await pool.execute(sqlUpdateStock, [data.quantitySold, data.productBarcode]);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// 7. PEDIDOS (SOPORTE PARA CUSTOM Y STANDARD)
+app.post('/api/registos/order', async (req, res) => {
+    try {
+        const data = req.body;
+        const compositionStr = JSON.stringify(data.composition || []);
+        const orderType = data.orderType || 'standard';
+        
+        // CORRECCIÓN: Si no hay código de barras (pedido custom), enviamos NULL
+        const productBarcode = data.productBarcode || null; 
+
+        const sql = `INSERT INTO pedidos (registo_id, clientName, productBarcode, quantity, dueDate, status, orderType, composition, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+        
+        await pool.execute(sql, [
+            data.id, 
+            data.clientName, 
+            productBarcode, // <--- Aquí estaba el error (antes era data.productBarcode)
+            data.quantity, 
+            data.dueDate, 
+            'pendente', 
+            orderType, 
+            compositionStr, 
+            data.timestamp
+        ]);
+        
+        res.json({ success: true });
+    } catch (e) {
+        console.error("Error al crear pedido:", e); // Añadí un log para que veas el error en la consola de Render si vuelve a pasar
+        res.status(500).json({ success: false, message: e.message });
+    }
+});
+
+// ==================== LISTAR TUDO (GET) ====================
+app.get('/api/registos', async (req, res) => {
   try {
     let allRecords = [];
-    const [fil] = await pool.execute('SELECT * FROM filamentos');
-    allRecords = allRecords.concat(fil.map(f => ({ ...f, id: f.registo_id, type: 'filament', weightPerUnit: parseFloat(f.weightPerUnit), pricePerUnit: parseFloat(f.pricePerUnit), minStock: parseFloat(f.minStock) })));
-    
-    const [prov] = await pool.execute('SELECT * FROM fornecedores');
-    allRecords = allRecords.concat(prov.map(s => ({ ...s, id: s.registo_id, type: 'supplier' })));
-    
-    const [prod] = await pool.execute('SELECT * FROM produtos');
-    allRecords = allRecords.concat(prod.map(p => ({ ...p, id: p.registo_id, type: 'product', stock: parseInt(p.stock), salePrice: parseFloat(p.salePrice), cost: parseFloat(p.cost), printTime: parseInt(p.printTime||0), composition: JSON.parse(p.composition || '[]') })));
-    
-    const [comp] = await pool.execute('SELECT * FROM entradas');
-    allRecords = allRecords.concat(comp.map(p => ({ ...p, id: p.registo_id, type: 'purchase', quantityPurchased: parseFloat(p.quantityPurchased) })));
-    
-    const [imp] = await pool.execute('SELECT * FROM impressoes');
-    allRecords = allRecords.concat(imp.map(p => ({ ...p, id: p.registo_id, type: 'print', filamentsUsed: JSON.parse(p.filamentsUsed || '[]') })));
-    
-    const [ven] = await pool.execute('SELECT * FROM vendas');
-    allRecords = allRecords.concat(ven.map(s => ({ ...s, id: s.registo_id, type: 'sale', quantitySold: parseInt(s.quantitySold), totalPrice: parseFloat(s.totalPrice) })));
-    
-    const [ped] = await pool.execute('SELECT * FROM pedidos');
-    allRecords = allRecords.concat(ped.map(o => ({ ...o, id: o.registo_id, type: 'order', quantity: parseInt(o.quantity), printTime: parseInt(o.printTime||0), composition: JSON.parse(o.composition || '[]') })));
 
-    const [maq] = await pool.execute('SELECT * FROM maquinas');
-    allRecords = allRecords.concat(maq.map(m => ({ ...m, id: m.registo_id, type: 'printer' })));
+    const [filaments] = await pool.execute('SELECT * FROM filamentos');
+    allRecords = allRecords.concat(filaments.map(f => ({ ...f, id: f.registo_id, type: 'filament', weightPerUnit: parseFloat(f.weightPerUnit), pricePerUnit: parseFloat(f.pricePerUnit), minStock: parseFloat(f.minStock) })));
 
-    const [agd] = await pool.execute('SELECT * FROM agendamentos');
-    allRecords = allRecords.concat(agd.map(a => ({ ...a, id: a.registo_id, type: 'schedule' })));
+    const [suppliers] = await pool.execute('SELECT * FROM fornecedores');
+    allRecords = allRecords.concat(suppliers.map(s => ({ ...s, id: s.registo_id, type: 'supplier', supplierName: s.supplierName })));
+
+    // Parseamos JSON composition
+    const [products] = await pool.execute('SELECT * FROM produtos');
+    allRecords = allRecords.concat(products.map(p => ({ 
+        ...p, 
+        id: p.registo_id, 
+        type: 'product', 
+        stock: parseInt(p.stock), 
+        salePrice: parseFloat(p.salePrice), 
+        cost: parseFloat(p.cost),
+        composition: JSON.parse(p.composition || '[]')
+    })));
+
+    const [purchases] = await pool.execute('SELECT * FROM entradas');
+    allRecords = allRecords.concat(purchases.map(p => ({ ...p, id: p.registo_id, type: 'purchase', quantityPurchased: parseFloat(p.quantityPurchased) })));
+
+    const [prints] = await pool.execute('SELECT * FROM impressoes');
+    allRecords = allRecords.concat(prints.map(p => ({ ...p, id: p.registo_id, type: 'print', filamentsUsed: JSON.parse(p.filamentsUsed || '[]') })));
+
+    const [sales] = await pool.execute('SELECT * FROM vendas');
+    allRecords = allRecords.concat(sales.map(s => ({ ...s, id: s.registo_id, type: 'sale', quantitySold: parseInt(s.quantitySold), totalPrice: parseFloat(s.totalPrice) })));
+
+    // Parseamos JSON composition y orderType
+    const [orders] = await pool.execute('SELECT * FROM pedidos');
+    allRecords = allRecords.concat(orders.map(o => ({ 
+        ...o, 
+        id: o.registo_id, 
+        type: 'order', 
+        quantity: parseInt(o.quantity),
+        composition: JSON.parse(o.composition || '[]') 
+    })));
 
     res.json({ success: true, data: allRecords });
-  } catch (error) { res.status(500).json({ success: false }); }
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false });
+  }
 });
 
-// RUTAS POST
-app.post('/api/registos/printer', verificarToken, async (req, res) => {
-    try { const d = req.body; await pool.execute("INSERT INTO maquinas (registo_id, nome, marca, modelo, timestamp) VALUES (?,?,?,?,?)", [d.id, d.nome, d.marca, d.modelo, d.timestamp]); res.json({ success: true }); } catch (e) { res.status(500).json({ success: false }); }
-});
-app.post('/api/registos/schedule', verificarToken, async (req, res) => {
-    try {
-        const { id, printer_id, title, start, end, filament_id, weight_used, color, timestamp } = req.body;
-        const [conflictos] = await pool.execute(`SELECT * FROM agendamentos WHERE printer_id = ? AND ((start < ? AND end > ?) OR (start < ? AND end > ?) OR (start >= ? AND end <= ?))`, [printer_id, end, start, end, start, start, end]);
-        if (conflictos.length > 0) return res.json({ success: false, message: "⚠️ Conflito de horário" });
-        await pool.execute("INSERT INTO agendamentos (registo_id, printer_id, title, start, end, filament_id, weight_used, color, timestamp) VALUES (?,?,?,?,?,?,?,?,?)", [id, printer_id, title, start, end, filament_id, weight_used, color, timestamp]);
-        res.json({ success: true });
-    } catch (e) { res.status(500).json({ success: false }); }
-});
-app.post('/api/registos/filament', verificarToken, async (req, res) => {
-    try { const d = req.body; await pool.execute("INSERT INTO filamentos (registo_id, barcode, name, material, color, weightPerUnit, pricePerUnit, minStock, supplier, timestamp) VALUES (?,?,?,?,?,?,?,?,?,?)", [d.id, d.barcode, d.name, d.material, d.color, d.weightPerUnit, d.pricePerUnit, d.minStock, d.supplier, d.timestamp]); res.json({ success: true }); } catch (e) { res.status(500).json({ success: false }); }
-});
-app.post('/api/registos/supplier', verificarToken, async (req, res) => {
-    try { const d = req.body; await pool.execute("INSERT INTO fornecedores (registo_id, supplierName, supplierEmail, supplierPhone, supplierAddress, timestamp) VALUES (?,?,?,?,?,?)", [d.id, d.supplierName, d.supplierEmail, d.supplierPhone, d.supplierAddress, d.timestamp]); res.json({ success: true }); } catch (e) { res.status(500).json({ success: false }); }
-});
-app.post('/api/registos/product', verificarToken, async (req, res) => {
-    try { const d = req.body; await pool.execute("INSERT INTO produtos (registo_id, barcode, name, productCategory, stock, cost, salePrice, composition, printTime, timestamp) VALUES (?,?,?,?,?,?,?,?,?,?)", [d.id, d.barcode, d.name, d.productCategory, d.stock, d.cost, d.salePrice, JSON.stringify(d.composition), d.printTime, d.timestamp]); res.json({ success: true }); } catch (e) { res.status(500).json({ success: false }); }
-});
-app.post('/api/registos/purchase', verificarToken, async (req, res) => {
-    try { const d = req.body; if(d.category === 'product') { await pool.execute("INSERT INTO entradas (registo_id, filamentBarcode, quantityPurchased, purchaseDate, supplier, timestamp) VALUES (?,?,?,?,?,?)", [d.id, d.barcode, d.quantityPurchased, d.purchaseDate, d.supplier, d.timestamp]); await pool.execute("UPDATE produtos SET stock = stock + ? WHERE barcode = ?", [d.quantityPurchased, d.barcode]); } else { await pool.execute("INSERT INTO entradas (registo_id, filamentBarcode, quantityPurchased, purchaseDate, supplier, timestamp) VALUES (?,?,?,?,?,?)", [d.id, d.filamentBarcode, d.quantityPurchased, d.purchaseDate, d.supplier, d.timestamp]); } res.json({ success: true }); } catch (e) { res.status(500).json({ success: false }); }
-});
-app.post('/api/registos/print', verificarToken, async (req, res) => {
-    try { const d = req.body; await pool.execute("INSERT INTO impressoes (registo_id, printName, filamentsUsed, notes, timestamp) VALUES (?,?,?,?,?)", [d.id, d.printName, JSON.stringify(d.filamentsUsed), d.notes, d.timestamp]); res.json({ success: true }); } catch (e) { res.status(500).json({ success: false }); }
-});
-app.post('/api/registos/sale', verificarToken, async (req, res) => {
-    try { const d = req.body; await pool.execute("INSERT INTO vendas (registo_id, productBarcode, quantitySold, totalPrice, saleDate, timestamp) VALUES (?,?,?,?,?,?)", [d.id, d.productBarcode, d.quantitySold, d.totalPrice, d.saleDate, d.timestamp]); await pool.execute("UPDATE produtos SET stock = stock - ? WHERE barcode = ?", [d.quantitySold, d.productBarcode]); res.json({ success: true }); } catch (e) { res.status(500).json({ success: false }); }
-});
-app.post('/api/registos/order', verificarToken, async (req, res) => {
-    try { const d = req.body; await pool.execute("INSERT INTO pedidos (registo_id, clientName, productBarcode, quantity, dueDate, status, orderType, composition, printTime, timestamp) VALUES (?,?,?,?,?,?,?,?,?,?)", [d.id, d.clientName, d.productBarcode||null, d.quantity, d.dueDate, 'pendente', d.orderType, JSON.stringify(d.composition||[]), d.printTime||0, d.timestamp]); res.json({ success: true }); } catch (e) { res.status(500).json({ success: false }); }
-});
-
-// DELETE
-app.delete('/api/registos/:type/:id', verificarToken, async (req, res) => {
+// 8. ELIMINAR
+app.delete('/api/registos/:type/:id', async (req, res) => {
     try {
         const { type, id } = req.params;
         let table = '';
-        if(type==='filament') table='filamentos'; else if(type==='supplier') table='fornecedores'; else if(type==='product') table='produtos'; else if(type==='purchase') table='entradas'; else if(type==='print') table='impressoes'; else if(type==='sale') table='vendas'; else if(type==='order') table='pedidos'; else if(type==='printer') table='maquinas'; else if(type==='schedule') table='agendamentos';
-        if(!table) return res.status(400).json({success: false});
-        await pool.execute(`DELETE FROM ${table} WHERE registo_id = ? OR id = ?`, [id, id]);
+        switch(type) {
+            case 'filament': table = 'filamentos'; break;
+            case 'supplier': table = 'fornecedores'; break;
+            case 'product': table = 'produtos'; break;
+            case 'purchase': table = 'entradas'; break;
+            case 'print': table = 'impressoes'; break;
+            case 'sale': table = 'vendas'; break;
+            case 'order': table = 'pedidos'; break;
+            default: return res.status(400).json({success: false});
+        }
+        const sql = `DELETE FROM ${table} WHERE registo_id = ? OR id = ?`;
+        await pool.execute(sql, [id, id]);
         res.json({ success: true });
-    } catch (e) { res.status(500).json({ success: false }); }
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
 });
 
-// PUT
-app.put('/api/registos/product/:id', verificarToken, async (req, res) => {
-    try { const d = req.body; await pool.execute("UPDATE produtos SET barcode=?, name=?, productCategory=?, stock=?, cost=?, salePrice=?, composition=?, printTime=? WHERE registo_id=? OR id=?", [d.barcode, d.name, d.productCategory, d.stock, d.cost, d.salePrice, JSON.stringify(d.composition), d.printTime, req.params.id, req.params.id]); res.json({ success: true }); } catch (e) { res.status(500).json({ success: false }); }
-});
-app.put('/api/registos/order/:id/status', verificarToken, async (req, res) => {
-    const conn = await pool.getConnection();
+// 9. COMPLETAR PEDIDO
+app.put('/api/registos/order/:id/status', async (req, res) => {
     try {
-        await conn.beginTransaction();
-        const { id } = req.params; const { status } = req.body;
-        const [rows] = await conn.execute("SELECT * FROM pedidos WHERE registo_id = ? OR id = ?", [id, id]);
-        const ped = rows[0];
-        if (status === 'concluido' && ped.status !== 'concluido') {
-            if (ped.orderType === 'standard') await conn.execute("UPDATE produtos SET stock = stock - ? WHERE barcode = ?", [ped.quantity, ped.productBarcode]);
-            else await conn.execute("INSERT INTO impressoes (registo_id, printName, filamentsUsed, notes, timestamp) VALUES (?, ?, ?, ?, ?)", [Date.now().toString(), `Pedido: ${ped.clientName}`, ped.composition, 'Auto', new Date().toISOString()]);
-        }
-        await conn.execute("UPDATE pedidos SET status = ? WHERE registo_id = ? OR id = ?", [status, id, id]);
-        await conn.commit(); res.json({ success: true });
-    } catch (e) { await conn.rollback(); res.status(500).json({ success: false }); } finally { conn.release(); }
+        const { id } = req.params;
+        const { status } = req.body;
+        await pool.execute("UPDATE pedidos SET status = ? WHERE registo_id = ? OR id = ?", [status, id, id]);
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ success: false });
+    }
 });
-// (Agrega el resto de PUTs si quieres, pero los principales están aquí)
+
+// ==================== ATUALIZAR (PUT) ====================
+
+app.put('/api/registos/filament/:id', async (req, res) => {
+  try {
+    const { id } = req.params; const data = req.body;
+    const sql = `UPDATE filamentos SET barcode = ?, name = ?, material = ?, color = ?, weightPerUnit = ?, pricePerUnit = ?, minStock = ?, supplier = ? WHERE registo_id = ? OR id = ?`;
+    await pool.execute(sql, [data.barcode, data.name, data.material, data.color, parseFloat(data.weightPerUnit), parseFloat(data.pricePerUnit), parseFloat(data.minStock), data.supplier, id, id]);
+    res.json({ success: true });
+  } catch (error) { res.status(500).json({ success: false, message: error.message }); }
+});
+
+app.put('/api/registos/product/:id', async (req, res) => {
+  try {
+    const { id } = req.params; const data = req.body;
+    const compositionStr = JSON.stringify(data.composition || []);
+    const sql = `UPDATE produtos SET barcode = ?, name = ?, productCategory = ?, stock = ?, cost = ?, salePrice = ?, composition = ? WHERE registo_id = ? OR id = ?`;
+    await pool.execute(sql, [data.barcode, data.name, data.productCategory, parseInt(data.stock), parseFloat(data.cost), parseFloat(data.salePrice), compositionStr, id, id]);
+    res.json({ success: true });
+  } catch (error) { res.status(500).json({ success: false, message: error.message }); }
+});
+
+app.put('/api/registos/supplier/:id', async (req, res) => {
+  try {
+    const { id } = req.params; const data = req.body;
+    const sql = `UPDATE fornecedores SET supplierName = ?, supplierEmail = ?, supplierPhone = ?, supplierAddress = ? WHERE registo_id = ? OR id = ?`;
+    await pool.execute(sql, [data.supplierName, data.supplierEmail, data.supplierPhone, data.supplierAddress, id, id]);
+    res.json({ success: true });
+  } catch (error) { res.status(500).json({ success: false, message: error.message }); }
+});
+
+app.put('/api/registos/purchase/:id', async (req, res) => {
+  try {
+    const { id } = req.params; const data = req.body;
+    const sql = `UPDATE entradas SET filamentBarcode = ?, quantityPurchased = ?, purchaseDate = ?, supplier = ? WHERE registo_id = ? OR id = ?`;
+    await pool.execute(sql, [data.filamentBarcode, parseFloat(data.quantityPurchased), data.purchaseDate, data.supplier, id, id]);
+    res.json({ success: true });
+  } catch (error) { res.status(500).json({ success: false, message: error.message }); }
+});
+
+app.put('/api/registos/print/:id', async (req, res) => {
+  try {
+    const { id } = req.params; const data = req.body;
+    const filamentsString = JSON.stringify(data.filamentsUsed || []);
+    const sql = `UPDATE impressoes SET printName = ?, filamentsUsed = ?, notes = ? WHERE registo_id = ? OR id = ?`;
+    await pool.execute(sql, [data.printName, filamentsString, data.notes, id, id]);
+    res.json({ success: true });
+  } catch (error) { res.status(500).json({ success: false, message: error.message }); }
+});
+
+app.put('/api/registos/sale/:id', async (req, res) => {
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    const { id } = req.params; const data = req.body;
+    const [oldSaleRows] = await connection.execute('SELECT * FROM vendas WHERE registo_id = ? OR id = ?', [id, id]);
+    if (oldSaleRows.length === 0) throw new Error('Venda não encontrada');
+    const oldSale = oldSaleRows[0];
+    await connection.execute('UPDATE produtos SET stock = stock + ? WHERE barcode = ?', [oldSale.quantitySold, oldSale.productBarcode]);
+    await connection.execute('UPDATE vendas SET productBarcode = ?, quantitySold = ?, totalPrice = ?, saleDate = ? WHERE registo_id = ? OR id = ?', [data.productBarcode, data.quantitySold, data.totalPrice, data.saleDate, id, id]);
+    await connection.execute('UPDATE produtos SET stock = stock - ? WHERE barcode = ?', [data.quantitySold, data.productBarcode]);
+    await connection.commit();
+    res.json({ success: true, message: 'Venda e stock atualizados' });
+  } catch (error) { await connection.rollback(); res.status(500).json({ success: false, message: error.message }); } 
+  finally { connection.release(); }
+});
 
 async function startServer() {
   await initDatabase();
-  app.listen(PORT, () => console.log(`🚀 Servidor en puerto ${PORT}`));
+  app.listen(PORT, () => console.log(`🚀 Porta ${PORT}`));
 }
 startServer();

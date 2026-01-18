@@ -324,10 +324,23 @@ app.put('/api/registos/filament/:id', async (req, res) => {
 
 app.put('/api/registos/product/:id', async (req, res) => {
   try {
-    const { id } = req.params; const data = req.body;
+    const { id } = req.params; 
+    const data = req.body;
     const compositionStr = JSON.stringify(data.composition || []);
-    const sql = `UPDATE produtos SET barcode = ?, name = ?, productCategory = ?, stock = ?, cost = ?, salePrice = ?, composition = ? WHERE registo_id = ? OR id = ?`;
-    await pool.execute(sql, [data.barcode, data.name, data.productCategory, parseInt(data.stock), parseFloat(data.cost), parseFloat(data.salePrice), compositionStr, id, id]);
+    // CORREÇÃO: Adicionado printTime na query SQL
+    const sql = `UPDATE produtos SET barcode = ?, name = ?, productCategory = ?, stock = ?, cost = ?, salePrice = ?, composition = ?, printTime = ? WHERE registo_id = ? OR id = ?`;
+    await pool.execute(sql, [
+      data.barcode, 
+      data.name, 
+      data.productCategory, 
+      parseInt(data.stock), 
+      parseFloat(data.cost), 
+      parseFloat(data.salePrice), 
+      compositionStr,
+      data.printTime || 0, // Adicionado aqui
+      id, 
+      id
+    ]);
     res.json({ success: true });
   } catch (error) { res.status(500).json({ success: false, message: error.message }); }
 });

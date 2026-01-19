@@ -32,7 +32,7 @@ async function initDatabase() {
     
     const connection = await pool.getConnection();
 
-    // 1. TABLA PEDIDOS (Si no existe, la crea)
+    // 1. TABLA PEDIDOS 
     await connection.execute(`
       CREATE TABLE IF NOT EXISTS pedidos (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -48,17 +48,17 @@ async function initDatabase() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
     
-    // 2. MIGRACIONES (Añadir columnas nuevas si faltan)
+    // 2. MIGRACIONES 
     try {
         await connection.execute("ALTER TABLE produtos ADD COLUMN composition LONGTEXT");
         console.log("Columna 'composition' añadida a produtos");
-    } catch (e) { /* Ignorar si ya existe */ }
+    } catch (e) { }
 
     try {
         await connection.execute("ALTER TABLE pedidos ADD COLUMN orderType VARCHAR(20) DEFAULT 'standard'");
         await connection.execute("ALTER TABLE pedidos ADD COLUMN composition LONGTEXT");
         console.log("Columnas añadidas a pedidos");
-    } catch (e) { /* Ignorar si ya existe */ }
+    } catch (e) { }
 
     connection.release();
   } catch (error) {
@@ -196,20 +196,14 @@ app.post('/api/registos/sale', async (req, res) => {
   }
 });
 
-// 7. PEDIDOS (SOPORTE PARA CUSTOM Y STANDARD + TIEMPO)
+// 7. PEDIDOS 
 app.post('/api/registos/order', async (req, res) => {
     try {
         const data = req.body;
         const compositionStr = JSON.stringify(data.composition || []);
         const orderType = data.orderType || 'standard';
         const productBarcode = data.productBarcode || null;
-        
-        // CORRECCIÓN: Capturamos el tiempo de impresión (printTime)
-        // Si es standard, quizás venga 0 y lo sacamos del producto luego, 
-        // pero si es custom, viene aquí.
         const printTime = parseInt(data.printTime) || 0; 
-
-        // SQL ACTUALIZADO: Añadimos printTime
         const sql = `INSERT INTO pedidos (registo_id, clientName, productBarcode, quantity, dueDate, status, orderType, composition, timestamp, printTime) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
         
         await pool.execute(sql, [
@@ -222,7 +216,7 @@ app.post('/api/registos/order', async (req, res) => {
             orderType, 
             compositionStr, 
             data.timestamp,
-            printTime // <--- Nuevo campo guardado
+            printTime 
         ]);
         
         res.json({ success: true });
@@ -242,7 +236,7 @@ app.get('/api/registos', async (req, res) => {
     const [suppliers] = await pool.execute('SELECT * FROM fornecedores');
     allRecords = allRecords.concat(suppliers.map(s => ({ ...s, id: s.registo_id, type: 'supplier', supplierName: s.supplierName })));
 
-    // Parseamos JSON composition
+    
     const [products] = await pool.execute('SELECT * FROM produtos');
     allRecords = allRecords.concat(products.map(p => ({ 
         ...p, 
@@ -263,7 +257,7 @@ app.get('/api/registos', async (req, res) => {
     const [sales] = await pool.execute('SELECT * FROM vendas');
     allRecords = allRecords.concat(sales.map(s => ({ ...s, id: s.registo_id, type: 'sale', quantitySold: parseInt(s.quantitySold), totalPrice: parseFloat(s.totalPrice) })));
 
-    // Parseamos JSON composition y orderType
+  
     const [orders] = await pool.execute('SELECT * FROM pedidos');
     allRecords = allRecords.concat(orders.map(o => ({ 
         ...o, 
@@ -331,7 +325,6 @@ app.put('/api/registos/product/:id', async (req, res) => {
     const { id } = req.params; 
     const data = req.body;
     const compositionStr = JSON.stringify(data.composition || []);
-    // CORREÇÃO: Adicionado printTime na query SQL
     const sql = `UPDATE produtos SET barcode = ?, name = ?, productCategory = ?, stock = ?, cost = ?, salePrice = ?, composition = ?, printTime = ? WHERE registo_id = ? OR id = ?`;
     await pool.execute(sql, [
       data.barcode, 
@@ -341,7 +334,7 @@ app.put('/api/registos/product/:id', async (req, res) => {
       parseFloat(data.cost), 
       parseFloat(data.salePrice), 
       compositionStr,
-      data.printTime || 0, // Adicionado aqui
+      data.printTime || 0, 
       id, 
       id
     ]);
